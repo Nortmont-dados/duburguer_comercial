@@ -988,14 +988,14 @@ tr:hover td { background: rgba(197,233,212,.35); cursor: pointer; }
     <!-- 7 · Tabela Marcas de Carne -->
     <div class="chart-card chart-full">
       <div class="chart-title">Tabela 1 — Performance por Marca de Carne (Receita R$ e Quantidade kg)</div>
-      <div style="font-size:10px;color:rgba(0,0,0,.45);margin-bottom:16px;">Receita bruta e kg vendidos por marca de carne, mês a mês. Kg estimado pela proporção de receita por cliente.</div>
+      <div style="font-size:10px;color:rgba(0,0,0,.45);margin-bottom:16px;">Receita bruta e kg vendidos por marca de carne, mês a mês. Kg real (Peso Líquido Total do Item), somado direto por marca.</div>
       <div id="tabelaMarcasCarne"></div>
     </div>
 
     <!-- 7B · Tabela Preço Médio por Marca -->
     <div class="chart-card chart-full">
       <div class="chart-title" id="titlePrecoMarca">Tabela 1B — Preço Médio por Marca de Carne (R$/kg) — Evolução Mensal 2026</div>
-      <div style="font-size:10px;color:rgba(0,0,0,.45);margin-bottom:16px;">Preço médio realizado (R$/kg) por marca de carne em cada mês. Calculado como Receita ÷ kg estimado por proporcionalidade de cliente. Variação colorida: <span style="color:var(--success);font-weight:600;">verde = alta</span>, <span style="color:var(--danger);font-weight:600;">vermelho = queda</span>.</div>
+      <div style="font-size:10px;color:rgba(0,0,0,.45);margin-bottom:16px;">Preço médio realizado (R$/kg) por marca de carne em cada mês. Calculado como Receita ÷ kg real (Peso Líquido Total do Item). Variação colorida: <span style="color:var(--success);font-weight:600;">verde = alta</span>, <span style="color:var(--danger);font-weight:600;">vermelho = queda</span>.</div>
       <div id="tabelaPrecoMarca"></div>
     </div>
 
@@ -2057,7 +2057,7 @@ function _computeGlobalFirstDates(allRows) {
 // TRANSFORMAÇÃO DE DADOS BRUTOS DO GOOGLE DRIVE → ESTRUTURAS DO PAINEL
 // =====================================================================
 function _transformRawRows(rows) {
-  const PESO_BRANDS = ['SCAR','VIGOR','MCCOY\u00b4S'];
+  const PESO_BRANDS = ['SCAR','VIGOR','MCCOY\u00b4S','TEMPERO COMPLETO','PREMIUM','COM SAL','COSTELA','FRANGO TEMPERADO'];
   const MES_NAMES   = ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
   const round2 = v => Math.round((v||0)*100)/100;
 
@@ -7297,31 +7297,12 @@ function computeBrandKgMonthly() {
   const MESES = MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5];
   const MEAT_BRANDS = ['TEMPERO COMPLETO', 'PREMIUM', 'COM SAL', 'COSTELA', 'FRANGO TEMPERADO'];
 
-  // brandKg[brand][mes] = kg estimado
+  // brandKg[brand][mes] = kg real (Peso Líquido Total do Item), somado direto por marca/mês,
+  // igual à tabela dinâmica do Excel — sem rateio por proporção de receita do cliente.
   const brandKg = {};
-  MEAT_BRANDS.forEach(b => { brandKg[b] = {}; MESES.forEach(m => { brandKg[b][m] = 0; }); });
-
-  CLIENTS.forEach(c => {
-    const products = CLIENT_PRODUCTS[c.cliente] || [];
-    const monthly  = CLIENT_MONTHLY[c.cliente]  || [];
-
-    // Total revenue por marca de carne deste cliente
-    const brandRev = {};
-    let totalMeatRev = 0;
-    products.forEach(p => {
-      if (MEAT_BRANDS.includes(p.marca)) {
-        brandRev[p.marca] = (brandRev[p.marca] || 0) + p.receita;
-        totalMeatRev += p.receita;
-      }
-    });
-    if (totalMeatRev === 0) return;
-
-    monthly.forEach(({ mes, kg }) => {
-      if (!kg || kg === 0) return;
-      Object.entries(brandRev).forEach(([brand, rev]) => {
-        brandKg[brand][mes] += kg * (rev / totalMeatRev);
-      });
-    });
+  MEAT_BRANDS.forEach(b => {
+    brandKg[b] = {};
+    MESES.forEach(m => { brandKg[b][m] = (BRAND_QTY_DATA[String(m)] || {})[b] || 0; });
   });
 
   return brandKg;
