@@ -6,6 +6,8 @@
 <title>Painel Comercial · Todos os Vendedores · Nortmont</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<!-- Google Identity Services (login com Google real) -->
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
@@ -9329,20 +9331,23 @@ function _computeBrandDataFromClients(clients) {
 }
 
 /* ====================================================================
-   SISTEMA DE AUTENTICAÇÃO POR E-MAIL
-   duburguer@gmail.com         → acesso total (todos os vendedores)
-   klein.decio@hotmail.com     → acesso restrito (DÉCIO KLEIN / DECIO)
-   menonrudinei@gmail.com      → acesso restrito (RUDINEI 1 / RUDINEI 3 / KLEYTON 1 / KLEYTON 3)
-   tiago.costavibra@gmail.com  → acesso restrito (TIAGO 1 / TIAGO 3)
+   SISTEMA DE AUTENTICAÇÃO — LOGIN COM GOOGLE (Google Identity Services)
+   Apenas os e-mails abaixo, autenticados de fato pelo Google, entram.
+   duburguer@gmail.com              → acesso total (todos os vendedores)
+   angella.focusfranquias@gmail.com → acesso total (todos os vendedores)
+   klein.decio@hotmail.com          → acesso restrito (DÉCIO KLEIN / DECIO)
+   menonrudinei@gmail.com           → acesso restrito (RUDINEI 1 / RUDINEI 3 / KLEYTON 1 / KLEYTON 3)
+   tiago.costavibra@gmail.com       → acesso restrito (TIAGO 1 / TIAGO 3)
    ==================================================================== */
 
 let _isRestrictedUser = false;
 
 const _AUTH_ROLES = {
-  'duburguer@gmail.com':        'admin',
-  'klein.decio@hotmail.com':    'restricted',
-  'menonrudinei@gmail.com':     'restricted',
-  'tiago.costavibra@gmail.com': 'restricted'
+  'duburguer@gmail.com':              'admin',
+  'angella.focusfranquias@gmail.com': 'admin',
+  'klein.decio@hotmail.com':          'restricted',
+  'menonrudinei@gmail.com':           'restricted',
+  'tiago.costavibra@gmail.com':       'restricted'
 };
 
 /* Mapa de e-mail restrito → vendedores aos quais ele tem acesso.
@@ -9380,35 +9385,52 @@ function _normalizeVendorName(v) {
     .toUpperCase().replace(/\s+/g, ' ').trim();
 }
 
-/** Chamado pelo botão "Acessar Painel" e pelo Enter no campo de e-mail */
-function _doLogin() {
-  const emailInput = document.getElementById('login-email');
-  const errorEl    = document.getElementById('login-error');
-  const btn        = document.getElementById('login-btn');
-  const email      = _normalizeEmail(emailInput ? emailInput.value : '');
+/* ====================================================================
+   LOGIN COM GOOGLE (Google Identity Services)
+   Substitua abaixo pelo Client ID gerado no Google Cloud Console
+   (Credenciais → ID do cliente OAuth → tipo "Aplicativo da Web").
+   ==================================================================== */
+const _GOOGLE_CLIENT_ID = '646359826891-176bdom8mgnkb1n3k0acu83l9tba01f3.apps.googleusercontent.com';
 
-  // Reseta erro anterior
+/** Decodifica o JWT (id_token) retornado pelo Google, sem precisar de backend.
+ *  A assinatura já foi validada pela própria biblioteca do Google no navegador
+ *  antes de chamar o callback — este parse só extrai os dados do payload. */
+function _parseGoogleJwt(token) {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(atob(base64).split('').map(c =>
+      '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)
+    ).join(''));
+    return JSON.parse(json);
+  } catch (e) { return null; }
+}
+
+/** Callback chamado pelo Google após o usuário se autenticar de verdade com sua conta Google */
+function _handleGoogleCredential(response) {
+  const errorEl = document.getElementById('login-error');
   errorEl.style.display = 'none';
 
-  if (!email) {
-    errorEl.textContent = 'Por favor, informe o seu e-mail.';
+  const payload = _parseGoogleJwt(response.credential);
+  if (!payload || !payload.email) {
+    errorEl.textContent = 'Não foi possível validar sua conta Google. Tente novamente.';
     errorEl.style.display = 'block';
-    if (emailInput) emailInput.focus();
     return;
   }
 
-  const role = _AUTH_ROLES[email];
+  // Exige e-mail verificado pelo Google (protege contra contas não confirmadas)
+  if (payload.email_verified === false) {
+    errorEl.textContent = 'Seu e-mail Google não está verificado.';
+    errorEl.style.display = 'block';
+    return;
+  }
+
+  const email = _normalizeEmail(payload.email);
+  const role  = _AUTH_ROLES[email];
 
   if (!role) {
-    errorEl.textContent = 'E-mail não autorizado. Verifique e tente novamente.';
+    errorEl.textContent = 'E-mail "' + payload.email + '" não autorizado a acessar este painel.';
     errorEl.style.display = 'block';
-    if (emailInput) {
-      emailInput.style.borderColor = 'rgba(179,58,58,.55)';
-      emailInput.select();
-      setTimeout(() => {
-        if (emailInput) emailInput.style.borderColor = 'rgba(168,204,168,.18)';
-      }, 2200);
-    }
     return;
   }
 
@@ -9416,25 +9438,38 @@ function _doLogin() {
   _isRestrictedUser = (role === 'restricted');
   sessionStorage.setItem('db_auth', JSON.stringify({ role, email }));
 
-  // Animação de sucesso no botão
-  if (btn) {
-    btn.textContent = '✓ AUTORIZADO';
-    btn.style.background = '#2F8F6E';
-    btn.style.color = '#fff';
-  }
+  const loginScreen = document.getElementById('login-screen');
+  if (loginScreen) loginScreen.style.display = 'none';
 
-  setTimeout(() => {
-    const loginScreen = document.getElementById('login-screen');
-    if (loginScreen) loginScreen.style.display = 'none';
-    // Atualiza info do usuário na sidebar
-    _updateSidebarUser(email, role);
-    // Se dados já carregados e usuário restrito, aplicar filtro agora
-    if (_isRestrictedUser && _dataLoaded) {
-      _applyDecioFilter();
-    }
-    // ── Carrega dados do Sheets após login ──
-    dbCarregarTudo();
-  }, 380);
+  _updateSidebarUser(email, role);
+  if (_isRestrictedUser && _dataLoaded) {
+    _applyDecioFilter();
+  }
+  dbCarregarTudo();
+}
+
+/** Inicializa o botão "Entrar com o Google" na tela de login */
+function _initGoogleSignIn() {
+  if (!window.google || !google.accounts || !google.accounts.id) {
+    // Biblioteca ainda não carregou — tenta novamente em breve
+    setTimeout(_initGoogleSignIn, 300);
+    return;
+  }
+  google.accounts.id.initialize({
+    client_id: _GOOGLE_CLIENT_ID,
+    callback: _handleGoogleCredential,
+    auto_select: false
+  });
+  const btnContainer = document.getElementById('google-signin-btn');
+  if (btnContainer) {
+    google.accounts.id.renderButton(btnContainer, {
+      theme: 'filled_black',
+      size: 'large',
+      shape: 'pill',
+      text: 'signin_with',
+      width: 320
+    });
+  }
 }
 
 /** Logout — limpa sessão e recarrega */
@@ -9518,6 +9553,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _domReady = true;
   _loadDriveData(); // inicia carregamento assíncrono
   _tryRender();     // renderiza se dados já disponíveis (cache)
+  _initGoogleSignIn(); // inicializa o botão "Entrar com o Google" na tela de login
 
   // Inicializa os dropdowns de período (jan/22…dez/26)
   _initPeriodFilters();
@@ -9627,31 +9663,14 @@ document.addEventListener('DOMContentLoaded', () => {
     <!-- Card de login -->
     <div style="background:rgba(255,255,255,.04);border:1px solid rgba(168,204,168,.13);border-radius:20px;padding:36px 38px 32px;backdrop-filter:blur(18px);box-shadow:0 32px 80px rgba(0,0,0,.55);">
       <div style="font-size:12px;font-weight:500;color:rgba(224,238,231,.5);margin-bottom:22px;line-height:1.55;letter-spacing:.2px;">
-        Informe o e-mail cadastrado para acessar o painel.
-      </div>
-
-      <!-- Campo e-mail -->
-      <div style="margin-bottom:14px;">
-        <label style="display:block;font-size:8px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:rgba(168,204,168,.5);margin-bottom:8px;">E-mail</label>
-        <input id="login-email" type="email" placeholder="seu@email.com" autocomplete="email"
-          style="width:100%;padding:13px 16px;background:rgba(255,255,255,.06);border:1.5px solid rgba(168,204,168,.18);border-radius:10px;color:#E0EEE7;font-size:14px;font-family:'Montserrat',sans-serif;outline:none;box-sizing:border-box;transition:border-color .18s,background .18s;"
-          onkeydown="if(event.key==='Enter') _doLogin()"
-          onfocus="this.style.borderColor='rgba(168,204,168,.55)';this.style.background='rgba(255,255,255,.09)'"
-          onblur="this.style.borderColor='rgba(168,204,168,.18)';this.style.background='rgba(255,255,255,.06)'">
+        Faça login com a sua conta Google cadastrada para acessar o painel.
       </div>
 
       <!-- Mensagem de erro -->
       <div id="login-error" style="display:none;background:rgba(179,58,58,.12);border:1px solid rgba(179,58,58,.28);border-radius:8px;padding:10px 14px;font-size:11px;color:#e07070;margin-bottom:14px;font-weight:500;line-height:1.4;"></div>
 
-      <!-- Botão -->
-      <button id="login-btn" onclick="_doLogin()"
-        style="width:100%;padding:14px;background:#A8CCA8;color:#011E3C;border:none;border-radius:10px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;letter-spacing:.8px;text-transform:uppercase;transition:background .15s,transform .1s;margin-top:4px;"
-        onmouseover="this.style.background='#c0dcc0'"
-        onmouseout="this.style.background='#A8CCA8'"
-        onmousedown="this.style.transform='scale(.98)'"
-        onmouseup="this.style.transform='scale(1)'">
-        ACESSAR PAINEL
-      </button>
+      <!-- Botão oficial "Entrar com o Google" (renderizado via Google Identity Services) -->
+      <div id="google-signin-btn" style="display:flex;justify-content:center;margin-top:4px;"></div>
     </div>
 
     <!-- Rodapé -->
