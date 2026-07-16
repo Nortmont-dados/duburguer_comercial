@@ -1122,7 +1122,7 @@ tr:hover td { background: rgba(197,233,212,.35); cursor: pointer; }
       <div class="page-title">Carteira <span>completa</span></div>
       <div class="page-desc">Todos os clientes com receita em 2026. Filtre por cluster, movimento, cidade. Clique para abrir o Card.</div>
     </div>
-
+    <button class="btn btn-teal" id="btn-baixar-pdf-cart" onclick="baixarCarteiraPDF()">⬇ Baixar PDF</button>
   </div>
 
 
@@ -2024,8 +2024,15 @@ let CLIENT_MONTHLY  = {};
 let CLIENT_PRODUCTS = {};
 let MONTHLY_KPIS    = [];
 let BRAND_DATA_ALL  = {};
+let BRAND_QTY_ALL   = {};
 let BRAND_DATA      = {};
 let BRAND_QTY_DATA  = {};
+// Índice por cliente → mês → marca com receita e quantidade REAIS (peso/un.),
+// usado para recalcular corretamente as tabelas de preço médio (R$/kg) quando
+// se filtra por vendedor. Sem isso a receita filtra mas a quantidade não,
+// gerando R$/kg incoerente.
+let CLIENT_BRAND_REC = {};
+let CLIENT_BRAND_QTY = {};
 // ── Filtro por Ano ──────────────────────────────────────────────────
 let RAW_ROWS_ALL        = [];   // todos os dados brutos (multi-ano)
 let YEARS_WITH_DATA     = [];   // anos detectados com dados válidos
@@ -2103,7 +2110,7 @@ function _transformRawRows(rows) {
         cliente, receita:0, rev_ind:0, rev_dist:0, kg_carne:0,
         nfsSet:new Set(), lastDate:null, cidade:'', estado:'',
         vendedorCount:{}, mesesSet:new Set(),
-        monthlyMap:{}, productMap:{}
+        monthlyMap:{}, productMap:{}, brandRecMap:{}, brandQtyMap:{}
       };
     }
     const c = clientMap[cliente];
@@ -2127,6 +2134,29 @@ function _transformRawRows(rows) {
     const pk = familia+'|'+marca;
     if (!c.productMap[pk]) c.productMap[pk] = {familia:familiaRaw, marca:marcaRaw, receita:0};
     c.productMap[pk].receita += totalMerc;
+
+    // Índice por cliente → mês → marca: receita e quantidade REAIS.
+    // Usa a MESMA lógica de unidade do BRAND_QTY_DATA global (peso p/ marcas de
+    // peso; conversões p/ DISIPAN e MAGNIFICO), para que o R$/kg permaneça
+    // coerente quando os dados forem filtrados por vendedor.
+    if (marca) {
+      let qtyBrand = qtd;
+      if (PESO_BRANDS.includes(marca)) {
+        qtyBrand = peso;
+      } else if (marca === 'DISIPAN') {
+        if (desc.includes('40'))      qtyBrand = qtd*40;
+        else if (desc.includes('4'))  qtyBrand = qtd*4;
+        else                          qtyBrand = qtd*40;
+      } else if (marca === 'MAGNIFICO') {
+        if (desc.includes('10L')||desc.includes('10 L')) qtyBrand = qtd*10;
+        else if (desc.match(/5[\s.]?L/))                 qtyBrand = qtd*5;
+      }
+      const ms = String(mes);
+      if (!c.brandRecMap[ms]) c.brandRecMap[ms] = {};
+      if (!c.brandQtyMap[ms]) c.brandQtyMap[ms] = {};
+      c.brandRecMap[ms][marca] = (c.brandRecMap[ms][marca]||0) + totalMerc;
+      c.brandQtyMap[ms][marca] = (c.brandQtyMap[ms][marca]||0) + qtyBrand;
+    }
   });
 
   // ---- CLIENTS ----
@@ -2173,6 +2203,13 @@ function _transformRawRows(rows) {
     CLIENT_PRODUCTS[cli] = Object.values(clientMap[cli].productMap)
       .map(p=>({familia:String(p.familia), marca:String(p.marca), receita:round2(p.receita)}))
       .sort((a,b)=>b.receita-a.receita);
+  });
+
+  // ---- CLIENT_BRAND_REC / CLIENT_BRAND_QTY (por cliente → mês → marca) ----
+  const CLIENT_BRAND_REC = {}, CLIENT_BRAND_QTY = {};
+  Object.keys(clientMap).forEach(cli => {
+    CLIENT_BRAND_REC[cli] = clientMap[cli].brandRecMap;
+    CLIENT_BRAND_QTY[cli] = clientMap[cli].brandQtyMap;
   });
 
   // ---- VENDEDORES_LIST ----
@@ -2279,7 +2316,8 @@ function _transformRawRows(rows) {
   );
 
   return { CLIENTS, CLIENT_MONTHLY, CLIENT_PRODUCTS, VENDEDORES_LIST,
-           MONTHLY_KPIS, BRAND_DATA_ALL, BRAND_QTY_DATA };
+           MONTHLY_KPIS, BRAND_DATA_ALL, BRAND_QTY_DATA,
+           CLIENT_BRAND_REC, CLIENT_BRAND_QTY };
 }
 
 // =====================================================================
@@ -2336,6 +2374,12 @@ async function _loadDriveData() {
     Object.assign(BRAND_DATA, JSON.parse(JSON.stringify(result.BRAND_DATA_ALL)));
     Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
     Object.assign(BRAND_QTY_DATA, result.BRAND_QTY_DATA);
+    Object.keys(BRAND_QTY_ALL).forEach(k=>delete BRAND_QTY_ALL[k]);
+    Object.assign(BRAND_QTY_ALL, JSON.parse(JSON.stringify(result.BRAND_QTY_DATA)));
+    Object.keys(CLIENT_BRAND_REC).forEach(k=>delete CLIENT_BRAND_REC[k]);
+    Object.assign(CLIENT_BRAND_REC, result.CLIENT_BRAND_REC);
+    Object.keys(CLIENT_BRAND_QTY).forEach(k=>delete CLIENT_BRAND_QTY[k]);
+    Object.assign(CLIENT_BRAND_QTY, result.CLIENT_BRAND_QTY);
     CLIENTS_ALL.splice(0, Infinity, ...result.CLIENTS);
 
     if (msg) msg.textContent = '✅ Carregado! Renderizando painel...';
@@ -2895,6 +2939,12 @@ function applyYearsFilterMulti() {
   Object.assign(BRAND_DATA, JSON.parse(JSON.stringify(result.BRAND_DATA_ALL)));
   Object.keys(BRAND_QTY_DATA).forEach(k => delete BRAND_QTY_DATA[k]);
   Object.assign(BRAND_QTY_DATA, result.BRAND_QTY_DATA);
+  Object.keys(BRAND_QTY_ALL).forEach(k=>delete BRAND_QTY_ALL[k]);
+  Object.assign(BRAND_QTY_ALL, JSON.parse(JSON.stringify(result.BRAND_QTY_DATA)));
+  Object.keys(CLIENT_BRAND_REC).forEach(k=>delete CLIENT_BRAND_REC[k]);
+  Object.assign(CLIENT_BRAND_REC, result.CLIENT_BRAND_REC);
+  Object.keys(CLIENT_BRAND_QTY).forEach(k=>delete CLIENT_BRAND_QTY[k]);
+  Object.assign(CLIENT_BRAND_QTY, result.CLIENT_BRAND_QTY);
   CLIENTS_ALL.splice(0, Infinity, ...result.CLIENTS);
 
   // Atualiza selects de vendedor
@@ -2934,6 +2984,8 @@ function applyYearsFilterMulti() {
     MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
     Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
     Object.assign(BRAND_DATA, _computeBrandDataFromClients(CLIENTS));
+    Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
+    Object.assign(BRAND_QTY_DATA, _computeBrandQtyFromClients(CLIENTS));
   }
 
   // Renderizar pills de ano e dropdown de meses
@@ -3162,6 +3214,12 @@ function _applyMonthYearFilter() {
   Object.assign(BRAND_DATA, JSON.parse(JSON.stringify(result.BRAND_DATA_ALL)));
   Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
   Object.assign(BRAND_QTY_DATA, result.BRAND_QTY_DATA);
+  Object.keys(BRAND_QTY_ALL).forEach(k=>delete BRAND_QTY_ALL[k]);
+  Object.assign(BRAND_QTY_ALL, JSON.parse(JSON.stringify(result.BRAND_QTY_DATA)));
+  Object.keys(CLIENT_BRAND_REC).forEach(k=>delete CLIENT_BRAND_REC[k]);
+  Object.assign(CLIENT_BRAND_REC, result.CLIENT_BRAND_REC);
+  Object.keys(CLIENT_BRAND_QTY).forEach(k=>delete CLIENT_BRAND_QTY[k]);
+  Object.assign(CLIENT_BRAND_QTY, result.CLIENT_BRAND_QTY);
   CLIENTS_ALL.splice(0, Infinity, ...result.CLIENTS);
 
   // Reaplica filtro de vendedor se ativo (ou zerar dados se usuário restrito
@@ -3176,6 +3234,8 @@ function _applyMonthYearFilter() {
     MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
     Object.keys(BRAND_DATA).forEach(k=>delete BRAND_DATA[k]);
     Object.assign(BRAND_DATA, _computeBrandDataFromClients(CLIENTS));
+    Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
+    Object.assign(BRAND_QTY_DATA, _computeBrandQtyFromClients(CLIENTS));
   }
 
   _initVendorSelects();
@@ -9108,6 +9168,13 @@ function _applyVendorFilterMulti() {
   Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
   Object.assign(BRAND_DATA, newBrand);
 
+  // Espelha a quantidade (kg/un.) para manter o R$/kg coerente com o filtro.
+  const newQty = (vArr.length || _isRestrictedUser)
+    ? _computeBrandQtyFromClients(CLIENTS)
+    : JSON.parse(JSON.stringify(BRAND_QTY_ALL));
+  Object.keys(BRAND_QTY_DATA).forEach(k => delete BRAND_QTY_DATA[k]);
+  Object.assign(BRAND_QTY_DATA, newQty);
+
   const _activePane = document.querySelector('.tab-pane.active');
   const _tabId = _activePane ? _activePane.id.replace('tab-','') : 'visao-geral';
 
@@ -9297,26 +9364,74 @@ function _computeMKFromClients(clients, monthsOverride, mnSource) {
 /* Recompute BRAND_DATA from filtered clients */
 function _computeBrandDataFromClients(clients) {
   const activeMeses = MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5];
+  const activeSet   = new Set(activeMeses.map(String));
   const bd = {};
   activeMeses.forEach(m => { bd[String(m)] = {}; });
-  clients.forEach(c => {
-    const prods = CLIENT_PRODUCTS[c.cliente]||[];
-    const totRec = c.receita||1;
-    const monthly = CLIENT_MONTHLY[c.cliente]||[];
-    monthly.forEach(mRec => {
-      const m = String(mRec.mes);
-      if (!bd[m]) return; // ignora meses fora do período ativo
-      prods.forEach(p => {
-        const share = p.receita / totRec;
-        const mRev = mRec.receita * share;
-        bd[m][p.marca] = (bd[m][p.marca]||0) + mRev;
+
+  // Preferir a receita REAL por marca/mês (índice por cliente). Isso deixa o
+  // numerador do R$/kg coerente com o denominador (quantidade), que também é
+  // recalculado a partir dos mesmos clientes filtrados.
+  const temIndice = (typeof CLIENT_BRAND_REC !== 'undefined') && Object.keys(CLIENT_BRAND_REC).length;
+  if (temIndice) {
+    clients.forEach(c => {
+      const idx = CLIENT_BRAND_REC[c.cliente];
+      if (!idx) return;
+      Object.keys(idx).forEach(m => {
+        if (!activeSet.has(m)) return;
+        Object.entries(idx[m]).forEach(([marca, rec]) => {
+          bd[m][marca] = (bd[m][marca] || 0) + rec;
+        });
       });
     });
-  });
+  } else {
+    // Fallback (comportamento antigo): rateio pela participação de receita do produto.
+    clients.forEach(c => {
+      const prods = CLIENT_PRODUCTS[c.cliente]||[];
+      const totRec = c.receita||1;
+      const monthly = CLIENT_MONTHLY[c.cliente]||[];
+      monthly.forEach(mRec => {
+        const m = String(mRec.mes);
+        if (!bd[m]) return; // ignora meses fora do período ativo
+        prods.forEach(p => {
+          const share = p.receita / totRec;
+          bd[m][p.marca] = (bd[m][p.marca]||0) + mRec.receita * share;
+        });
+      });
+    });
+  }
   Object.keys(bd).forEach(m => {
     Object.keys(bd[m]).forEach(k => { bd[m][k] = +bd[m][k].toFixed(2); });
   });
   return bd;
+}
+
+/**
+ * Recalcula a quantidade real (kg/un.) por marca/mês a partir do conjunto de
+ * clientes filtrado, usando o índice CLIENT_BRAND_QTY montado na carga dos dados.
+ * Mantém a mesma lógica de unidade do BRAND_QTY_DATA global, garantindo que o
+ * preço médio (R$/kg = receita ÷ quantidade) permaneça coerente ao filtrar
+ * vendedores. Retorna apenas os meses ativos (mesmo critério da receita).
+ */
+function _computeBrandQtyFromClients(clients) {
+  const activeMeses = MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5];
+  const activeSet   = new Set(activeMeses.map(String));
+  const bq = {};
+  activeMeses.forEach(m => { bq[String(m)] = {}; });
+  if (typeof CLIENT_BRAND_QTY === 'undefined' || !Object.keys(CLIENT_BRAND_QTY).length) return bq;
+  clients.forEach(c => {
+    const idx = CLIENT_BRAND_QTY[c.cliente];
+    if (!idx) return;
+    Object.keys(idx).forEach(m => {
+      if (!activeSet.has(m)) return;
+      Object.entries(idx[m]).forEach(([marca, q]) => {
+        bq[m][marca] = (bq[m][marca] || 0) + q;
+      });
+    });
+  });
+  Object.keys(bq).forEach(m => {
+    Object.keys(bq[m]).forEach(k => { bq[m][k] = +bq[m][k].toFixed(2); });
+  });
+  return bq;
 }
 
 /* ====================================================================
@@ -9584,24 +9699,33 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 
-<!-- ======== EXPORTAÇÃO PDF · VISÃO GERAL ======== -->
+<!-- ======== EXPORTAÇÃO PDF · ABAS (Visão Geral / Carteira) ======== -->
 <script>
 /**
- * Gera um PDF da aba "Visão Geral" capturando exatamente o que está na tela,
- * portanto respeitando os filtros ativos (vendedor, ano e meses).
- * Cada KPI-grid e cada card de gráfico/tabela é capturado como bloco, evitando
- * cortes feios no meio do conteúdo. Um resumo dos filtros aplicados é impresso
- * no topo do documento.
+ * Motor genérico de exportação de uma aba para PDF.
+ * Captura, em ordem de DOM, os blocos indicados (KPIs, gráficos e tabelas),
+ * fatiando blocos muito altos entre páginas e expandindo tabelas com rolagem
+ * horizontal para que apareçam por inteiro. Imprime no topo um resumo dos
+ * filtros aplicados (vendedor / ano / meses), de modo que o PDF reflete
+ * exatamente o recorte que está na tela.
+ *
+ * @param {Object} opts
+ * @param {string} opts.paneId    id do .tab-pane (ex.: 'tab-visao-geral')
+ * @param {string} opts.btnId     id do botão que disparou (para estado de loading)
+ * @param {string} opts.titulo    título do relatório
+ * @param {string} opts.selector  seletor CSS dos blocos a capturar
+ * @param {Object} [opts.dividers] mapa { elementId: 'RÓTULO DA SEÇÃO' }
+ * @param {string} opts.slugBase  prefixo do nome do arquivo
  */
-async function baixarVisaoGeralPDF() {
-  const btn  = document.getElementById('btn-baixar-pdf-vg');
-  const pane = document.getElementById('tab-visao-geral');
+async function _gerarPDFdaAba(opts) {
+  const btn  = opts.btnId ? document.getElementById(opts.btnId) : null;
+  const pane = document.getElementById(opts.paneId);
   if (!pane) return;
 
-  // Garante que a aba está visível (html2canvas precisa de layout renderizado)
   if (!pane.classList.contains('active')) {
-    showTab('visao-geral', document.querySelector('.nav-item[onclick*="visao-geral"]'));
-    await new Promise(r => setTimeout(r, 400));
+    const nav = document.querySelector('.nav-item[onclick*="' + opts.paneId.replace('tab-', '') + '"]');
+    showTab(opts.paneId.replace('tab-', ''), nav);
+    await new Promise(r => setTimeout(r, 450));
   }
 
   if (typeof html2canvas === 'undefined' || !(window.jspdf && window.jspdf.jsPDF)) {
@@ -9614,94 +9738,110 @@ async function baixarVisaoGeralPDF() {
   if (btn) { btn.disabled = true; btn.style.opacity = '.6'; btn.style.cursor = 'wait'; btn.innerHTML = '⏳ Gerando PDF…'; }
 
   try {
-    // ─── Resumo dos filtros ativos ────────────────────────────────────
+    // ─── Resumo dos filtros ativos ──────────────────────────────────
     const mesesLabel = (typeof selectedMonthYears !== 'undefined' && selectedMonthYears.length)
       ? selectedMonthYears.map(k => { const [y, m] = k.split('_'); return _MESES_ABR[parseInt(m) - 1] + '/' + String(y).slice(2); }).join(', ')
       : 'Todos os meses';
     const anosLabel = (typeof selectedYears !== 'undefined' && selectedYears.length) ? selectedYears.join(', ') : 'Todos';
     const vendLabel = (typeof _filterVendedores !== 'undefined' && _filterVendedores.length) ? _filterVendedores.join(', ') : 'Todos os vendedores';
-
     const hoje    = new Date();
     const dataGer = hoje.toLocaleDateString('pt-BR') + ' ' + hoje.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 
-    // ─── Documento A4 retrato ─────────────────────────────────────────
     const pdf     = new jsPDF('p', 'mm', 'a4');
     const pageW   = pdf.internal.pageSize.getWidth();
     const pageH   = pdf.internal.pageSize.getHeight();
-    const M       = 10;                 // margem esquerda/direita/topo
-    const footerH = 10;                 // espaço reservado ao rodapé
+    const M       = 10;
+    const footerH = 10;
     const contentW = pageW - M * 2;
-    const maxY     = pageH - footerH;   // limite inferior do conteúdo
+    const maxY     = pageH - footerH;
     let y = M;
 
-    // ─── Cabeçalho do relatório ───────────────────────────────────────
-    pdf.setFillColor(15, 66, 69);           // teal-deep
+    // ─── Cabeçalho ──────────────────────────────────────────────────
+    pdf.setFillColor(15, 66, 69);
     pdf.rect(0, 0, pageW, 26, 'F');
     pdf.setTextColor(255, 255, 255);
-    pdf.setFont('helvetica', 'bold');  pdf.setFontSize(15);
-    pdf.text('Painel Comercial — Visão Geral', M, 12);
+    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(15);
+    pdf.text(opts.titulo, M, 12);
     pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8);
     pdf.setTextColor(200, 225, 215);
     pdf.text('Nortmont · Sistema Comercial', M, 18.5);
     pdf.text('Gerado em ' + dataGer, pageW - M, 12, { align: 'right' });
     y = 32;
 
-    // ─── Caixa "Filtros aplicados" ────────────────────────────────────
+    // ─── Caixa de filtros ───────────────────────────────────────────
     pdf.setDrawColor(15, 66, 69);
     pdf.setFillColor(240, 246, 243);
     pdf.roundedRect(M, y, contentW, 20, 2, 2, 'FD');
-    pdf.setTextColor(15, 66, 69);  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8);
+    pdf.setTextColor(15, 66, 69); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8);
     pdf.text('FILTROS APLICADOS', M + 3, y + 5.5);
     pdf.setFont('helvetica', 'normal'); pdf.setTextColor(45, 45, 45); pdf.setFontSize(8);
     pdf.text(pdf.splitTextToSize('Vendedor: ' + vendLabel, contentW - 6), M + 3, y + 11);
     pdf.text(pdf.splitTextToSize('Ano: ' + anosLabel + '     •     Meses: ' + mesesLabel, contentW - 6), M + 3, y + 16.5);
     y += 26;
 
-    // ─── Blocos a capturar, em ordem de DOM ───────────────────────────
-    const nodes = Array.from(pane.querySelectorAll('.kpi-grid, .chart-card'));
+    // ─── Coleta dos blocos ──────────────────────────────────────────
+    const nodes = Array.from(pane.querySelectorAll(opts.selector))
+      // evita capturar um bloco que esteja dentro de outro já capturado
+      .filter(n => !n.parentElement.closest(opts.selector));
+
+    const addImagemFatiada = (canvas) => {
+      // Coloca a imagem podendo quebrar em várias páginas (fatiamento vertical)
+      const imgW = contentW;
+      const fullH = canvas.height * imgW / canvas.width;      // altura total em mm
+      const pxPerMm = canvas.height / fullH;                   // px por mm
+      let renderedH = 0;
+      while (renderedH < fullH - 0.5) {
+        const espaco = maxY - y;                               // mm disponíveis na página
+        if (espaco < 20) { pdf.addPage(); y = M; continue; }
+        const sliceMm = Math.min(espaco, fullH - renderedH);
+        const sy = Math.round(renderedH * pxPerMm);
+        const sh = Math.round(sliceMm * pxPerMm);
+        // Recorta a fatia em um canvas temporário
+        const tmp = document.createElement('canvas');
+        tmp.width = canvas.width; tmp.height = sh;
+        tmp.getContext('2d').drawImage(canvas, 0, sy, canvas.width, sh, 0, 0, canvas.width, sh);
+        pdf.addImage(tmp.toDataURL('image/jpeg', 0.92), 'JPEG', M, y, imgW, sliceMm);
+        y += sliceMm + 3;
+        renderedH += sliceMm;
+        if (renderedH < fullH - 0.5) { pdf.addPage(); y = M; }
+      }
+    };
 
     for (const node of nodes) {
-      if (node.offsetHeight === 0 || node.offsetWidth === 0) continue; // ignora ocultos
+      if (node.offsetHeight === 0 || node.offsetWidth === 0) continue;
 
-      // Divisor de seção antes dos KPIs de fidelidade
-      if (node.id === 'kpisFidelidade') {
+      // Divisor de seção opcional
+      if (opts.dividers && opts.dividers[node.id]) {
         if (y + 14 > maxY) { pdf.addPage(); y = M; }
         pdf.setDrawColor(179, 58, 58); pdf.setLineWidth(0.6);
         pdf.line(M, y + 2, M + contentW, y + 2);
         pdf.setLineWidth(0.2);
         pdf.setTextColor(150, 40, 40); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(9);
-        pdf.text('FIDELIDADE E PERDA DE CLIENTES', M, y + 8);
+        pdf.text(opts.dividers[node.id], M, y + 8);
         y += 13;
       }
 
-      const canvas = await html2canvas(node, {
-        scale: 2,
-        backgroundColor: '#FFFFFF',
-        useCORS: true,
-        logging: false,
-        scrollX: 0,
-        scrollY: -window.scrollY
-      });
-
-      let imgW = contentW;
-      let imgH = canvas.height * imgW / canvas.width;
-
-      // Se o bloco for mais alto que uma página inteira, encaixa na altura
-      const fullUsable = maxY - M;
-      if (imgH > fullUsable) {
-        imgH = fullUsable;
-        imgW = canvas.width * imgH / canvas.height;
+      // Expande tabelas com rolagem horizontal para capturar tudo
+      const wrap = node.classList.contains('table-wrap') ? node : node.querySelector('.table-wrap');
+      let prevOverflow = null, prevWidth = null;
+      if (wrap && wrap.scrollWidth > wrap.clientWidth) {
+        prevOverflow = wrap.style.overflow; prevWidth = wrap.style.width;
+        wrap.style.overflow = 'visible';
+        wrap.style.width = wrap.scrollWidth + 'px';
       }
 
-      // Quebra de página se não couber no espaço restante
-      if (y + imgH > maxY) { pdf.addPage(); y = M; }
+      const canvas = await html2canvas(node, {
+        scale: 2, backgroundColor: '#FFFFFF', useCORS: true, logging: false,
+        scrollX: 0, scrollY: -window.scrollY,
+        windowWidth: document.documentElement.scrollWidth
+      });
 
-      const x = M + (contentW - imgW) / 2;
-      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', x, y, imgW, imgH);
-      y += imgH + 4;
+      if (wrap && prevOverflow !== null) { wrap.style.overflow = prevOverflow; wrap.style.width = prevWidth; }
+
+      addImagemFatiada(canvas);
     }
 
-    // ─── Rodapé com numeração de páginas ──────────────────────────────
+    // ─── Rodapé ─────────────────────────────────────────────────────
     const total = pdf.internal.getNumberOfPages();
     for (let i = 1; i <= total; i++) {
       pdf.setPage(i);
@@ -9711,14 +9851,13 @@ async function baixarVisaoGeralPDF() {
       pdf.text('Página ' + i + ' de ' + total, pageW - M, pageH - 4, { align: 'right' });
     }
 
-    // ─── Nome do arquivo baseado nos filtros ──────────────────────────
+    // ─── Nome do arquivo ────────────────────────────────────────────
     const slug = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
-    let fname = 'visao-geral';
+    let fname = opts.slugBase;
     if (typeof _filterVendedores !== 'undefined' && _filterVendedores.length) fname += '_' + slug(_filterVendedores.join('-'));
     if (typeof selectedMonthYears !== 'undefined' && selectedMonthYears.length) fname += '_' + selectedMonthYears.join('-');
     fname += '_' + hoje.toISOString().slice(0, 10) + '.pdf';
-
     pdf.save(fname);
   } catch (err) {
     console.error('Erro ao gerar PDF:', err);
@@ -9726,6 +9865,29 @@ async function baixarVisaoGeralPDF() {
   } finally {
     if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.innerHTML = origLabel; }
   }
+}
+
+/* Wrapper — Visão Geral */
+function baixarVisaoGeralPDF() {
+  return _gerarPDFdaAba({
+    paneId: 'tab-visao-geral',
+    btnId: 'btn-baixar-pdf-vg',
+    titulo: 'Painel Comercial — Visão Geral',
+    selector: '.kpi-grid, .chart-card',
+    dividers: { 'kpisFidelidade': 'FIDELIDADE E PERDA DE CLIENTES' },
+    slugBase: 'visao-geral'
+  });
+}
+
+/* Wrapper — Carteira Completa */
+function baixarCarteiraPDF() {
+  return _gerarPDFdaAba({
+    paneId: 'tab-carteira',
+    btnId: 'btn-baixar-pdf-cart',
+    titulo: 'Painel Comercial — Carteira Completa',
+    selector: '.kpi-grid, .chart-card, .table-wrap',
+    slugBase: 'carteira'
+  });
 }
 </script>
 
