@@ -3310,8 +3310,14 @@ function renderKPIGrid() {
   const totInd  = allM.reduce((s,m)=>s+m.receita_ind,0);
   const totNfs  = allM.reduce((s,m)=>s+m.nfs,0);
   const totKg   = allM.reduce((s,m)=>s+m.kg_carne,0);
-  const totNovos  = allM.reduce((s,m)=>s+m.novos,0);
-  const totReinc  = allM.reduce((s,m)=>s+m.reincidentes,0);
+  // Novos/Reincidentes com definição correta e restrita ao vendedor filtrado.
+  // Antes: somava os "novos" mensais → em base de ano único isso resultava em
+  // Novos == Clientes (todo cliente é "1ª vez" no ano). Agora:
+  //  - Novos = clientes cuja 1ª compra caiu DENTRO do período, fora do mês inicial
+  //  - Reincidentes = clientes que compraram em 2+ meses do período
+  const _flowKPI  = _computeClientFlow(allM.map(m => m.mes));
+  const totNovos  = _flowKPI.novosPeriodo;
+  const totReinc  = _flowKPI.recorrentes;
   const totSkus   = Math.max(...allM.map(m=>m.skus_unicos), 0);
   const cliA   = CLIENTS.filter(c=>c.cluster==='A');
   const nCli   = CLIENTS.length;
@@ -3337,8 +3343,8 @@ function renderKPIGrid() {
     { label:'Ticket Médio / Pedido',  val:fmt(d.ticket_pedido),      sub:'' },
     { label:'Ticket Médio / Cliente', val:fmt(d.ticket_cliente),     sub:'' },
     { label:'Kg Carne',               val:fmtKg(d.kg_carne),         sub:'' },
-    { label:'Novos Clientes',         val:fmtNum(d.novos),           sub:'compradores de 1ª vez' },
-    { label:'Reincidentes',           val:fmtNum(d.reincidentes),    sub:'compraram no mês anterior' },
+    { label:'Novos Clientes',         val:fmtNum(d.novos),           sub:'1ª compra durante o período' },
+    { label:'Reincidentes',           val:fmtNum(d.reincidentes),    sub:'compraram em 2+ meses do período' },
     { label:'Clientes A (≥R$20k)',    val:fmtNum(d.n_clientes_a),    sub:'' },
     { label:'Receita Clientes A',     val:fmt(d.receita_clientes_a), cls:'sage', sub:'', feature:true },
     { label:'% Share Clientes A',     val:fmtPct(d.share_clientes_a),sub:'' },
@@ -3446,6 +3452,87 @@ function renderReceitaTotalChart() {
   });
 }
 
+/* ================================================================
+   Helpers de escopo por vendedor para os gráficos/KPIs da Visão Geral.
+   CLIENT_MONTHLY é global (não é recalculado no filtro de vendedor),
+   então aqui restringimos ao conjunto de clientes atualmente filtrado
+   (CLIENTS já vem filtrado por vendedor em _applyVendorFilterMulti).
+   Assim os gráficos "Novos vs Reincidentes" e "Clientes por Faixa"
+   passam a respeitar o filtro de vendedor.
+   ================================================================ */
+function _activeClientSet() {
+  return new Set((typeof CLIENTS !== 'undefined' ? CLIENTS : []).map(c => c.cliente));
+}
+function _scopedClientMonthly() {
+  const set = _activeClientSet();
+  const out = {};
+  Object.entries(CLIENT_MONTHLY).forEach(([cli, recs]) => { if (set.has(cli)) out[cli] = recs; });
+  return out;
+}
+/* Fluxo de clientes do período, já restrito ao vendedor filtrado:
+   - per: série mensal { mes, novos, reincidentes } (para o gráfico)
+   - novosPeriodo: clientes cuja 1ª compra (histórico global) caiu DENTRO do
+                   período exibido, excluindo o mês inicial (base de abertura).
+                   => "clientes conquistados durante o período".
+   - recorrentes: clientes que compraram em 2+ meses distintos do período. */
+function _computeClientFlow(months) {
+  const scoped = _scopedClientMonthly();
+  const set    = _activeClientSet();
+  const firstMes = months.length ? months[0] : 1;
+  const refYear = (typeof selectedYears !== 'undefined' && selectedYears.length === 1) ? selectedYears[0]
+                : (typeof selectedYears !== 'undefined' && selectedYears.length > 1) ? Math.min(...selectedYears)
+                : (typeof selectedYear !== 'undefined' ? selectedYear : 2026);
+
+  // Fronteira: quem comprou no mês imediatamente anterior ao início do período
+  // (para não classificar como "novo" quem já vinha do mês anterior).
+  let prevMes = firstMes - 1, prevYear = refYear;
+  if (prevMes < 1) { prevMes = 12; prevYear = refYear - 1; }
+  const prevBoundary = new Set();
+  if (typeof RAW_ROWS_ALL !== 'undefined' && RAW_ROWS_ALL.length) {
+    RAW_ROWS_ALL.forEach(r => {
+      const d = new Date(r['Data de Emissão (completa)']);
+      if (!isNaN(d.getTime()) && d.getFullYear() === prevYear && d.getMonth() + 1 === prevMes) {
+        const cli = String(r['Cliente (Nome Fantasia)'] || '').trim();
+        if (cli && set.has(cli)) prevBoundary.add(cli);
+      }
+    });
+  }
+
+  const per = months.map(m => ({ mes:m, novos:0, reincidentes:0 }));
+  const recorrentesSet = new Set();
+  Object.entries(scoped).forEach(([cli, records]) => {
+    const mRev = {};
+    records.forEach(r => { mRev[r.mes] = r.receita; });
+    const boughtMonths = months.filter(m => mRev[m]);
+    if (boughtMonths.length >= 2) recorrentesSet.add(cli);
+    months.forEach((m, idx) => {
+      if (!mRev[m]) return;
+      const prevBought = months.slice(0, idx).filter(pm => mRev[pm]);
+      if (prevBought.length === 0) {
+        if (idx === 0 && prevBoundary.has(cli)) per[idx].reincidentes += 1;
+        else                                    per[idx].novos       += 1;
+      } else if (mRev[m - 1]) {
+        per[idx].reincidentes += 1;
+      }
+    });
+  });
+
+  // Novos conquistados no período: 1ª compra global dentro dos meses exibidos,
+  // fora do mês de abertura (que é a base pré-existente da carteira).
+  let novosPeriodo = 0;
+  const monthsSet = new Set(months);
+  Object.keys(scoped).forEach(cli => {
+    const gd = (typeof CLIENT_FIRST_DATE_GLOBAL !== 'undefined') ? CLIENT_FIRST_DATE_GLOBAL[cli] : null;
+    if (!gd || isNaN(gd.getTime())) return;
+    const gm = gd.getMonth() + 1;
+    if (gd.getFullYear() === refYear && monthsSet.has(gm) && (months.length === 1 || gm !== firstMes)) {
+      novosPeriodo += 1;
+    }
+  });
+
+  return { per, novosPeriodo, recorrentes: recorrentesSet.size };
+}
+
 function renderAllCharts() {
   const MN = MONTHLY_KPIS.map(d => d.nome);
   const _months5 = MONTHLY_KPIS.map(d => d.mes);
@@ -3489,48 +3576,10 @@ function renderAllCharts() {
   });
 
   // ---- Quantidade de clientes por tipo: Novos / Reincidentes ----
-  // Pré-computa clientes que compraram no mês imediatamente anterior ao início do período.
-  // Isso resolve a fronteira entre anos (ex: Dez/2025 → Jan/2026) e evita 0 reincidentes em Janeiro.
-  const _firstDisplayMes = _months5.length ? _months5[0] : 1;
-  const _prevCrossBoundary = new Set();
-  if (RAW_ROWS_ALL.length) {
-    // Determina o mês/ano que precede o início do período exibido
-    const _refYear = selectedYears.length === 1 ? selectedYears[0]
-                   : (selectedYears.length > 1 ? Math.min(...selectedYears) : (selectedYear || 2026));
-    let _prevCheckMes  = _firstDisplayMes - 1;
-    let _prevCheckYear = _refYear;
-    if (_prevCheckMes < 1) { _prevCheckMes = 12; _prevCheckYear = _refYear - 1; }
-    // Coleta todos os clientes que compraram nesse mês anterior (via histórico completo)
-    RAW_ROWS_ALL.forEach(r => {
-      const d = new Date(r['Data de Emissão (completa)']);
-      if (!isNaN(d.getTime()) && d.getFullYear() === _prevCheckYear && d.getMonth() + 1 === _prevCheckMes) {
-        const cli = String(r['Cliente (Nome Fantasia)'] || '').trim();
-        if (cli) _prevCrossBoundary.add(cli);
-      }
-    });
-  }
-
-  const _cTypeCount = _months5.map(m => ({ mes:m, novos:0, reincidentes:0 }));
-  Object.entries(CLIENT_MONTHLY).forEach(([cli, records]) => {
-    const mRevMap = {};
-    records.forEach(r => { mRevMap[r.mes] = r.receita; });
-    _months5.forEach((m, idx) => {
-      if (!mRevMap[m]) return;
-      const prevBought = _months5.slice(0, idx).filter(pm => mRevMap[pm]);
-      if (prevBought.length === 0) {
-        // Primeiro mês do período: verifica se o cliente comprou no mês anterior ao período
-        // (inclui fronteira entre anos, ex: Dez/2025 → Jan/2026)
-        if (idx === 0 && _prevCrossBoundary.has(cli)) {
-          _cTypeCount[idx].reincidentes += 1;
-        } else {
-          _cTypeCount[idx].novos += 1;
-        }
-      } else if (mRevMap[m - 1]) {
-        _cTypeCount[idx].reincidentes += 1;
-      }
-      // retorno removido conforme solicitado
-    });
-  });
+  // Agora restrito ao vendedor filtrado (via _computeClientFlow, que usa o
+  // conjunto de clientes atual). A lógica de fronteira entre meses/anos
+  // (Dez/2025 → Jan/2026) continua preservada dentro do helper.
+  const _cTypeCount = _computeClientFlow(_months5).per;
 
   destroyChart('chartRetencao');
   charts['chartRetencao'] = new Chart(document.getElementById('chartRetencao'), {
@@ -3566,8 +3615,9 @@ function renderAllCharts() {
   });
 
   // ---- Faixas de Clientes por Receita Bruta ----
+  const _scopedCM = _scopedClientMonthly(); // restrito ao vendedor filtrado
   const _faixaRev = _months5.map(m => ({ mes:m, A:0, B:0, C:0, D:0, E:0 }));
-  Object.entries(CLIENT_MONTHLY).forEach(([, records]) => {
+  Object.entries(_scopedCM).forEach(([, records]) => {
     records.forEach(r => {
       const idx = _months5.indexOf(r.mes);
       if (idx < 0) return;
@@ -3652,7 +3702,7 @@ function renderAllCharts() {
 
   // ---- Faixas de Clientes por QUANTIDADE ----
   const _faixaQtd = _months5.map(m => ({ mes:m, A:0, B:0, C:0, D:0, E:0 }));
-  Object.entries(CLIENT_MONTHLY).forEach(([, records]) => {
+  Object.entries(_scopedCM).forEach(([, records]) => {
     records.forEach(r => {
       const idx = _months5.indexOf(r.mes);
       if (idx < 0) return;
@@ -9821,22 +9871,61 @@ async function _gerarPDFdaAba(opts) {
         y += 13;
       }
 
-      // Expande tabelas com rolagem horizontal para capturar tudo
-      const wrap = node.classList.contains('table-wrap') ? node : node.querySelector('.table-wrap');
-      let prevOverflow = null, prevWidth = null;
-      if (wrap && wrap.scrollWidth > wrap.clientWidth) {
-        prevOverflow = wrap.style.overflow; prevWidth = wrap.style.width;
-        wrap.style.overflow = 'visible';
-        wrap.style.width = wrap.scrollWidth + 'px';
+      // ── Expande as tabelas roláveis (horizontal E vertical) para capturar
+      //    TODO o conteúdo, não apenas a parte visível na tela. Sem isso, as
+      //    tabelas com max-height (perdidos, alerta, sem-compra) saíam cortadas. ──
+      const wraps = [];
+      if (node.classList.contains('table-wrap')) wraps.push(node);
+      node.querySelectorAll('.table-wrap').forEach(w => wraps.push(w));
+      const _wrapState = wraps.map(w => ({
+        el: w, overflow: w.style.overflow, overflowX: w.style.overflowX,
+        overflowY: w.style.overflowY, maxHeight: w.style.maxHeight,
+        height: w.style.height, width: w.style.width
+      }));
+      wraps.forEach(w => {
+        const needWidth = w.scrollWidth > w.clientWidth;
+        w.style.overflow  = 'visible';
+        w.style.overflowX = 'visible';
+        w.style.overflowY = 'visible';
+        w.style.maxHeight = 'none';
+        w.style.height    = 'auto';
+        if (needWidth) w.style.width = w.scrollWidth + 'px';
+      });
+      // força reflow para medir a altura já expandida
+      void node.offsetHeight;
+
+      // ── Escala dinâmica: tabelas muito longas (ex.: carteira do Décio com
+      //    273 clientes) geram um canvas que excede o limite do navegador e
+      //    volta PRETO. Aqui reduzimos a escala para manter cada lado e a área
+      //    do canvas dentro de limites seguros. ──
+      const rawW = Math.max(node.scrollWidth, node.offsetWidth);
+      const rawH = Math.max(node.scrollHeight, node.offsetHeight);
+      const MAX_SIDE = 9000, MAX_AREA = 26000000, HARD_SIDE = 15000;
+      let capScale = 2;
+      capScale = Math.min(capScale, MAX_SIDE / rawW, MAX_SIDE / rawH);
+      if (rawW * capScale * rawH * capScale > MAX_AREA) {
+        capScale = Math.sqrt(MAX_AREA / (rawW * rawH));
       }
+      if (!isFinite(capScale) || capScale <= 0) capScale = 1;
+      capScale = Math.max(0.6, Math.min(2, capScale));
+      // trava dura: garante que nenhum lado ultrapasse o teto do canvas
+      capScale = Math.min(capScale, HARD_SIDE / rawW, HARD_SIDE / rawH);
 
       const canvas = await html2canvas(node, {
-        scale: 2, backgroundColor: '#FFFFFF', useCORS: true, logging: false,
-        scrollX: 0, scrollY: -window.scrollY,
+        scale: capScale, backgroundColor: '#FFFFFF', useCORS: true, logging: false,
+        imageTimeout: 0, scrollX: 0, scrollY: -window.scrollY,
         windowWidth: document.documentElement.scrollWidth
       });
 
-      if (wrap && prevOverflow !== null) { wrap.style.overflow = prevOverflow; wrap.style.width = prevWidth; }
+      // restaura os estilos originais das tabelas
+      _wrapState.forEach(s => {
+        s.el.style.overflow  = s.overflow;
+        s.el.style.overflowX = s.overflowX;
+        s.el.style.overflowY = s.overflowY;
+        s.el.style.maxHeight = s.maxHeight;
+        s.el.style.height    = s.height;
+        s.el.style.width     = s.width;
+      });
 
       addImagemFatiada(canvas);
     }
@@ -9885,7 +9974,7 @@ function baixarCarteiraPDF() {
     paneId: 'tab-carteira',
     btnId: 'btn-baixar-pdf-cart',
     titulo: 'Painel Comercial — Carteira Completa',
-    selector: '.kpi-grid, .chart-card, .table-wrap',
+    selector: '.kpi-grid, .chart-card, .table-wrap, #kpis-perdidos-carteira, #kpis-sem-compra',
     slugBase: 'carteira'
   });
 }
