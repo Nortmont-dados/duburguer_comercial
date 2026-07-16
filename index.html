@@ -12,6 +12,9 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- Exportação PDF da Visão Geral -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <style>
   #leaflet-map { width:100%; height:480px; border-radius:var(--r-lg); z-index:1; }
   .leaflet-container { background:#0B1829 !important; font-family:'Montserrat',sans-serif; }
@@ -899,9 +902,14 @@ tr:hover td { background: rgba(197,233,212,.35); cursor: pointer; }
 
 <!-- ABA 01 · VISÃO GERAL -->
 <div id="tab-visao-geral" class="tab-pane active">
-  <div class="page-eyebrow">ABA 01 · DIAGNÓSTICO</div>
-  <div class="page-title">Visão <span>geral</span></div>
-  <div class="page-desc" id="vg-page-desc">Performance consolidada de todos os vendedores em 2026 — KPIs mensais de receita, clientes, pedidos e mix de produtos.</div>
+  <div class="page-header-row">
+    <div>
+      <div class="page-eyebrow">ABA 01 · DIAGNÓSTICO</div>
+      <div class="page-title">Visão <span>geral</span></div>
+      <div class="page-desc" id="vg-page-desc">Performance consolidada de todos os vendedores em 2026 — KPIs mensais de receita, clientes, pedidos e mix de produtos.</div>
+    </div>
+    <button class="btn btn-teal" id="btn-baixar-pdf-vg" onclick="baixarVisaoGeralPDF()">⬇ Baixar PDF</button>
+  </div>
 
 
 <div class="vendor-filter-bar" id="vendor-bar-vg">
@@ -9575,6 +9583,152 @@ document.addEventListener('DOMContentLoaded', () => {
   })();
 });
 </script>
+
+<!-- ======== EXPORTAÇÃO PDF · VISÃO GERAL ======== -->
+<script>
+/**
+ * Gera um PDF da aba "Visão Geral" capturando exatamente o que está na tela,
+ * portanto respeitando os filtros ativos (vendedor, ano e meses).
+ * Cada KPI-grid e cada card de gráfico/tabela é capturado como bloco, evitando
+ * cortes feios no meio do conteúdo. Um resumo dos filtros aplicados é impresso
+ * no topo do documento.
+ */
+async function baixarVisaoGeralPDF() {
+  const btn  = document.getElementById('btn-baixar-pdf-vg');
+  const pane = document.getElementById('tab-visao-geral');
+  if (!pane) return;
+
+  // Garante que a aba está visível (html2canvas precisa de layout renderizado)
+  if (!pane.classList.contains('active')) {
+    showTab('visao-geral', document.querySelector('.nav-item[onclick*="visao-geral"]'));
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  if (typeof html2canvas === 'undefined' || !(window.jspdf && window.jspdf.jsPDF)) {
+    alert('As bibliotecas de exportação ainda estão carregando. Aguarde alguns segundos e tente novamente.');
+    return;
+  }
+  const { jsPDF } = window.jspdf;
+
+  const origLabel = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.style.opacity = '.6'; btn.style.cursor = 'wait'; btn.innerHTML = '⏳ Gerando PDF…'; }
+
+  try {
+    // ─── Resumo dos filtros ativos ────────────────────────────────────
+    const mesesLabel = (typeof selectedMonthYears !== 'undefined' && selectedMonthYears.length)
+      ? selectedMonthYears.map(k => { const [y, m] = k.split('_'); return _MESES_ABR[parseInt(m) - 1] + '/' + String(y).slice(2); }).join(', ')
+      : 'Todos os meses';
+    const anosLabel = (typeof selectedYears !== 'undefined' && selectedYears.length) ? selectedYears.join(', ') : 'Todos';
+    const vendLabel = (typeof _filterVendedores !== 'undefined' && _filterVendedores.length) ? _filterVendedores.join(', ') : 'Todos os vendedores';
+
+    const hoje    = new Date();
+    const dataGer = hoje.toLocaleDateString('pt-BR') + ' ' + hoje.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+
+    // ─── Documento A4 retrato ─────────────────────────────────────────
+    const pdf     = new jsPDF('p', 'mm', 'a4');
+    const pageW   = pdf.internal.pageSize.getWidth();
+    const pageH   = pdf.internal.pageSize.getHeight();
+    const M       = 10;                 // margem esquerda/direita/topo
+    const footerH = 10;                 // espaço reservado ao rodapé
+    const contentW = pageW - M * 2;
+    const maxY     = pageH - footerH;   // limite inferior do conteúdo
+    let y = M;
+
+    // ─── Cabeçalho do relatório ───────────────────────────────────────
+    pdf.setFillColor(15, 66, 69);           // teal-deep
+    pdf.rect(0, 0, pageW, 26, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont('helvetica', 'bold');  pdf.setFontSize(15);
+    pdf.text('Painel Comercial — Visão Geral', M, 12);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8);
+    pdf.setTextColor(200, 225, 215);
+    pdf.text('Nortmont · Sistema Comercial', M, 18.5);
+    pdf.text('Gerado em ' + dataGer, pageW - M, 12, { align: 'right' });
+    y = 32;
+
+    // ─── Caixa "Filtros aplicados" ────────────────────────────────────
+    pdf.setDrawColor(15, 66, 69);
+    pdf.setFillColor(240, 246, 243);
+    pdf.roundedRect(M, y, contentW, 20, 2, 2, 'FD');
+    pdf.setTextColor(15, 66, 69);  pdf.setFont('helvetica', 'bold'); pdf.setFontSize(8);
+    pdf.text('FILTROS APLICADOS', M + 3, y + 5.5);
+    pdf.setFont('helvetica', 'normal'); pdf.setTextColor(45, 45, 45); pdf.setFontSize(8);
+    pdf.text(pdf.splitTextToSize('Vendedor: ' + vendLabel, contentW - 6), M + 3, y + 11);
+    pdf.text(pdf.splitTextToSize('Ano: ' + anosLabel + '     •     Meses: ' + mesesLabel, contentW - 6), M + 3, y + 16.5);
+    y += 26;
+
+    // ─── Blocos a capturar, em ordem de DOM ───────────────────────────
+    const nodes = Array.from(pane.querySelectorAll('.kpi-grid, .chart-card'));
+
+    for (const node of nodes) {
+      if (node.offsetHeight === 0 || node.offsetWidth === 0) continue; // ignora ocultos
+
+      // Divisor de seção antes dos KPIs de fidelidade
+      if (node.id === 'kpisFidelidade') {
+        if (y + 14 > maxY) { pdf.addPage(); y = M; }
+        pdf.setDrawColor(179, 58, 58); pdf.setLineWidth(0.6);
+        pdf.line(M, y + 2, M + contentW, y + 2);
+        pdf.setLineWidth(0.2);
+        pdf.setTextColor(150, 40, 40); pdf.setFont('helvetica', 'bold'); pdf.setFontSize(9);
+        pdf.text('FIDELIDADE E PERDA DE CLIENTES', M, y + 8);
+        y += 13;
+      }
+
+      const canvas = await html2canvas(node, {
+        scale: 2,
+        backgroundColor: '#FFFFFF',
+        useCORS: true,
+        logging: false,
+        scrollX: 0,
+        scrollY: -window.scrollY
+      });
+
+      let imgW = contentW;
+      let imgH = canvas.height * imgW / canvas.width;
+
+      // Se o bloco for mais alto que uma página inteira, encaixa na altura
+      const fullUsable = maxY - M;
+      if (imgH > fullUsable) {
+        imgH = fullUsable;
+        imgW = canvas.width * imgH / canvas.height;
+      }
+
+      // Quebra de página se não couber no espaço restante
+      if (y + imgH > maxY) { pdf.addPage(); y = M; }
+
+      const x = M + (contentW - imgW) / 2;
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', x, y, imgW, imgH);
+      y += imgH + 4;
+    }
+
+    // ─── Rodapé com numeração de páginas ──────────────────────────────
+    const total = pdf.internal.getNumberOfPages();
+    for (let i = 1; i <= total; i++) {
+      pdf.setPage(i);
+      pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7);
+      pdf.setTextColor(120, 120, 120);
+      pdf.text('Nortmont · Painel Comercial', M, pageH - 4);
+      pdf.text('Página ' + i + ' de ' + total, pageW - M, pageH - 4, { align: 'right' });
+    }
+
+    // ─── Nome do arquivo baseado nos filtros ──────────────────────────
+    const slug = s => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase();
+    let fname = 'visao-geral';
+    if (typeof _filterVendedores !== 'undefined' && _filterVendedores.length) fname += '_' + slug(_filterVendedores.join('-'));
+    if (typeof selectedMonthYears !== 'undefined' && selectedMonthYears.length) fname += '_' + selectedMonthYears.join('-');
+    fname += '_' + hoje.toISOString().slice(0, 10) + '.pdf';
+
+    pdf.save(fname);
+  } catch (err) {
+    console.error('Erro ao gerar PDF:', err);
+    alert('Não foi possível gerar o PDF: ' + (err && err.message ? err.message : err));
+  } finally {
+    if (btn) { btn.disabled = false; btn.style.opacity = ''; btn.style.cursor = ''; btn.innerHTML = origLabel; }
+  }
+}
+</script>
+
 <!-- ======== CITY TERRITORY DETAIL DRAWER ======== -->
 <div id="ctdd-backdrop" class="cdd-backdrop">
   <div class="cdd-overlay" onclick="ctddClose()"></div>
