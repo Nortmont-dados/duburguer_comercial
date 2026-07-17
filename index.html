@@ -2976,16 +2976,8 @@ function applyYearsFilterMulti() {
   // não tiver nenhum vendedor válido mapeado — nunca mostrar tudo nesse caso)
   if (_filterVendedores.length || _isRestrictedUser) {
     _syncVendorPills();
-    CLIENTS.splice(0, Infinity, ..._filterVendedores.length
-      ? CLIENTS_ALL.filter(c => _filterVendedores.includes(c.vendedor))
-      : []);
-    const allMKs = _computeMKFromClients(CLIENTS);
-    _MONTHLY_KPIS_FULL.splice(0, Infinity, ...allMKs);
-    MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
-    Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
-    Object.assign(BRAND_DATA, _computeBrandDataFromClients(CLIENTS));
-    Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
-    Object.assign(BRAND_QTY_DATA, _computeBrandQtyFromClients(CLIENTS));
+    // Filtro por vendedor no nível da LINHA (idêntico ao pivot do Excel).
+    _recomputeVGForVendor();
   }
 
   // Renderizar pills de ano e dropdown de meses
@@ -3226,16 +3218,8 @@ function _applyMonthYearFilter() {
   // não tiver nenhum vendedor válido mapeado — nunca mostrar tudo nesse caso)
   if (_filterVendedores.length || _isRestrictedUser) {
     _syncVendorPills();
-    CLIENTS.splice(0, Infinity, ..._filterVendedores.length
-      ? CLIENTS_ALL.filter(c => _filterVendedores.includes(c.vendedor))
-      : []);
-    const allMKs = _computeMKFromClients(CLIENTS, result.MONTHLY_KPIS.map(d=>d.mes), _MONTHLY_KPIS_FULL);
-    _MONTHLY_KPIS_FULL.splice(0, Infinity, ...allMKs);
-    MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
-    Object.keys(BRAND_DATA).forEach(k=>delete BRAND_DATA[k]);
-    Object.assign(BRAND_DATA, _computeBrandDataFromClients(CLIENTS));
-    Object.keys(BRAND_QTY_DATA).forEach(k=>delete BRAND_QTY_DATA[k]);
-    Object.assign(BRAND_QTY_DATA, _computeBrandQtyFromClients(CLIENTS));
+    // Filtro por vendedor no nível da LINHA (idêntico ao pivot do Excel).
+    _recomputeVGForVendor();
   }
 
   _initVendorSelects();
@@ -9195,35 +9179,26 @@ function _applyVendorFilterMulti() {
   // vendedores dele estiver vazia (ex.: nome não encontrado nos dados), a carteira
   // fica vazia — nunca mostra clientes de outros vendedores.
   const _showAllWhenEmpty = !_isRestrictedUser;
-  CLIENTS = vArr.length
-    ? CLIENTS_ALL.filter(c => vArr.includes(c.vendedor))
-    : (_showAllWhenEmpty ? [...CLIENTS_ALL] : []);
-
-  // Usa _MONTHLY_KPIS_FULL para garantir que todos os meses do ano são recalculados
-  const baseMeses = _MONTHLY_KPIS_FULL.length ? _MONTHLY_KPIS_FULL.map(d => d.mes)
-                  : (MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5]);
-  const allMKs = _computeMKFromClients(CLIENTS, baseMeses, _MONTHLY_KPIS_FULL);
-  _MONTHLY_KPIS_FULL.splice(0, Infinity, ...allMKs);
-
-  // Aplica filtro de mês
-  if (selectedMonths.length > 0) {
-    MONTHLY_KPIS.splice(0, Infinity, ...allMKs.filter(d => selectedMonths.includes(d.mes)));
+  if (vArr.length || _isRestrictedUser) {
+    // Filtro por vendedor no nível da LINHA (idêntico ao pivot do Excel).
+    _recomputeVGForVendor();
   } else {
-    MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
+    // Sem filtro de vendedor (admin) → dataset completo do período.
+    CLIENTS.splice(0, Infinity, ...(_showAllWhenEmpty ? [...CLIENTS_ALL] : []));
+    const baseMeses = _MONTHLY_KPIS_FULL.length ? _MONTHLY_KPIS_FULL.map(d => d.mes)
+                    : (MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5]);
+    const allMKs = _computeMKFromClients(CLIENTS, baseMeses, _MONTHLY_KPIS_FULL);
+    _MONTHLY_KPIS_FULL.splice(0, Infinity, ...allMKs);
+    if (selectedMonths.length > 0) {
+      MONTHLY_KPIS.splice(0, Infinity, ...allMKs.filter(d => selectedMonths.includes(d.mes)));
+    } else {
+      MONTHLY_KPIS.splice(0, Infinity, ...allMKs);
+    }
+    Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
+    Object.assign(BRAND_DATA, JSON.parse(JSON.stringify(BRAND_DATA_ALL)));
+    Object.keys(BRAND_QTY_DATA).forEach(k => delete BRAND_QTY_DATA[k]);
+    Object.assign(BRAND_QTY_DATA, JSON.parse(JSON.stringify(BRAND_QTY_ALL)));
   }
-
-  const newBrand = (vArr.length || _isRestrictedUser)
-    ? _computeBrandDataFromClients(CLIENTS)
-    : JSON.parse(JSON.stringify(BRAND_DATA_ALL));
-  Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
-  Object.assign(BRAND_DATA, newBrand);
-
-  // Espelha a quantidade (kg/un.) para manter o R$/kg coerente com o filtro.
-  const newQty = (vArr.length || _isRestrictedUser)
-    ? _computeBrandQtyFromClients(CLIENTS)
-    : JSON.parse(JSON.stringify(BRAND_QTY_ALL));
-  Object.keys(BRAND_QTY_DATA).forEach(k => delete BRAND_QTY_DATA[k]);
-  Object.assign(BRAND_QTY_DATA, newQty);
 
   const _activePane = document.querySelector('.tab-pane.active');
   const _tabId = _activePane ? _activePane.id.replace('tab-','') : 'visao-geral';
@@ -9370,6 +9345,80 @@ function applyVendorFilter(v) {
 
 /* Recompute MONTHLY_KPIS from a filtered client set */
 /* monthsOverride: array of month numbers to use (optional); mnSource: source for month names */
+/* ====================================================================
+   RECÁLCULO DA VISÃO GERAL POR VENDEDOR — NÍVEL DE LINHA (= EXCEL)
+   --------------------------------------------------------------------
+   Antes, o filtro de vendedor da Visão Geral selecionava os clientes cujo
+   vendedor "dominante" era o filtrado e somava a receita CHEIA de cada um
+   (incluindo vendas de outros vendedores àquele cliente, e perdendo vendas
+   do vendedor filtrado a clientes dominados por terceiros). Isso divergia
+   do pivot do Excel, que soma linha a linha pela coluna "Vendedor".
+
+   Estas funções refazem o dataset da Visão Geral a partir das LINHAS brutas
+   já recortadas por período e filtradas por vendedor (via _filterRowsByVendor),
+   fazendo os totais baterem exatamente com o Excel.
+   ==================================================================== */
+
+/** Retorna RAW_ROWS_ALL recortado pelo período vigente da Visão Geral
+ *  (mês/ano específico se houver; senão ano(s); senão tudo). Não aplica
+ *  filtro de vendedor — isso é feito depois por _filterRowsByVendor. */
+function _vgPeriodRows() {
+  if (!RAW_ROWS_ALL.length) return [];
+  if (typeof selectedMonthYears !== 'undefined' && selectedMonthYears.length) {
+    const ymGroups = {};
+    selectedMonthYears.forEach(key => {
+      const [y, m] = key.split('_');
+      (ymGroups[y] = ymGroups[y] || []).push(parseInt(m));
+    });
+    return RAW_ROWS_ALL.filter(r => {
+      const d = new Date(r['Data de Emissão (completa)']);
+      if (isNaN(d.getTime())) return false;
+      const months = ymGroups[String(d.getFullYear())];
+      return months && months.includes(d.getMonth() + 1);
+    });
+  }
+  if (typeof selectedYears !== 'undefined' && selectedYears.length) {
+    return RAW_ROWS_ALL.filter(r => {
+      const d = new Date(r['Data de Emissão (completa)']);
+      return !isNaN(d.getTime()) && selectedYears.includes(d.getFullYear());
+    });
+  }
+  return RAW_ROWS_ALL;
+}
+
+/** Refaz TODOS os globais consumidos pela Visão Geral a partir das linhas
+ *  do período filtradas por vendedor no nível da linha (idêntico ao Excel).
+ *  Não toca CLIENTS_ALL (universo p/ as pills). Apenas popula dados; a
+ *  renderização continua a cargo de quem chama. */
+function _recomputeVGForVendor() {
+  const baseRows = _vgPeriodRows();
+  const rows     = _filterRowsByVendor(baseRows); // filtro por vendedor = coluna "Vendedor"
+  const result   = _transformRawRows(rows);
+
+  CLIENTS.splice(0, Infinity, ...result.CLIENTS);
+  Object.keys(CLIENT_MONTHLY).forEach(k => delete CLIENT_MONTHLY[k]);
+  Object.assign(CLIENT_MONTHLY, result.CLIENT_MONTHLY);
+  Object.keys(CLIENT_PRODUCTS).forEach(k => delete CLIENT_PRODUCTS[k]);
+  Object.assign(CLIENT_PRODUCTS, result.CLIENT_PRODUCTS);
+  Object.keys(CLIENT_BRAND_REC).forEach(k => delete CLIENT_BRAND_REC[k]);
+  Object.assign(CLIENT_BRAND_REC, result.CLIENT_BRAND_REC);
+  Object.keys(CLIENT_BRAND_QTY).forEach(k => delete CLIENT_BRAND_QTY[k]);
+  Object.assign(CLIENT_BRAND_QTY, result.CLIENT_BRAND_QTY);
+
+  _MONTHLY_KPIS_FULL.splice(0, Infinity, ...result.MONTHLY_KPIS);
+  if (typeof selectedMonths !== 'undefined' && selectedMonths.length) {
+    MONTHLY_KPIS.splice(0, Infinity,
+      ...result.MONTHLY_KPIS.filter(d => selectedMonths.includes(d.mes)));
+  } else {
+    MONTHLY_KPIS.splice(0, Infinity, ...result.MONTHLY_KPIS);
+  }
+
+  Object.keys(BRAND_DATA).forEach(k => delete BRAND_DATA[k]);
+  Object.assign(BRAND_DATA, JSON.parse(JSON.stringify(result.BRAND_DATA_ALL)));
+  Object.keys(BRAND_QTY_DATA).forEach(k => delete BRAND_QTY_DATA[k]);
+  Object.assign(BRAND_QTY_DATA, JSON.parse(JSON.stringify(result.BRAND_QTY_DATA)));
+}
+
 function _computeMKFromClients(clients, monthsOverride, mnSource) {
   // Se temos a lista completa de meses, use-a; senão, use o fallback
   const baseForMeses = mnSource || (_MONTHLY_KPIS_FULL.length ? _MONTHLY_KPIS_FULL : MONTHLY_KPIS);
