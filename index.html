@@ -2164,9 +2164,14 @@ function _transformRawRows(rows) {
       if (PESO_BRANDS.includes(marca)) {
         qtyBrand = peso;
       } else if (marca === 'DISIPAN') {
-        if (desc.includes('40'))      qtyBrand = qtd*40;
-        else if (desc.includes('4'))  qtyBrand = qtd*4;
-        else                          qtyBrand = qtd*40;
+        // BUGFIX: antes checava "40"/"4" na descrição INTEIRA, incluindo o código
+        // numérico do produto no início (ex.: "740 - ... PACOTE 4 UN" tem "40" dentro
+        // do próprio código "740" e era lido como caixa de 40un, quando na verdade a
+        // embalagem real é "PACOTE 4 UN" = ×4). Removemos o código antes de checar.
+        const descSemCodigo = desc.replace(/^\d+\s*-\s*/, '');
+        if (descSemCodigo.includes('40'))      qtyBrand = qtd*40;
+        else if (descSemCodigo.includes('4'))  qtyBrand = qtd*4;
+        else                                   qtyBrand = qtd*40;
       } else if (marca === 'MAGNIFICO') {
         if (desc.includes('10L')||desc.includes('10 L')) qtyBrand = qtd*10;
         else if (desc.match(/5[\s.]?L/))                 qtyBrand = qtd*5;
@@ -2307,7 +2312,7 @@ function _transformRawRows(rows) {
     const d = new Date(r['Data de Emissão (completa)']); if(isNaN(d.getTime())) return;
     const mes  = String(d.getMonth()+1);
     const marca= String(r['Marca']||'').trim().toUpperCase();
-    const desc = String(r['Descrição do Produto (completa)']||'').toUpperCase();
+    const desc = String(r['Descrição do Produto (completa)']||'').trim().toUpperCase();
     const tm   = parseFloat(r['Total de Mercadoria'])||0;
     const peso = parseFloat(r['Peso Líquido Total do Item (Kg)'])||0;
     const qtd  = parseFloat(r['Quantidade'])||0;
@@ -2319,11 +2324,15 @@ function _transformRawRows(rows) {
     if (PESO_BRANDS.includes(marca)) {
       qty = peso;
     } else if (marca==='DISIPAN') {
-      // Se descrição contém "40" → caixa de 40 unidades
-      // Se descrição contém "4" (mas não "40") → pacote de 4 unidades
+      // Se descrição (sem o código numérico do produto) contém "40" → caixa de 40 unidades
+      // Se contém "4" (mas não "40") → pacote de 4 unidades
       // Padrão (sem número na descrição) → trata como caixa de 40 unidades
-      if (desc.includes('40')) qty=qtd*40;
-      else if (desc.includes('4')) qty=qtd*4;
+      // BUGFIX: antes checava a descrição INTEIRA, o que incluía o código do produto no
+      // início (ex.: "740 - ... PACOTE 4 UN" tinha "40" dentro do código "740" e era
+      // incorretamente lido como caixa de 40un, quando a embalagem real é "PACOTE 4 UN" = ×4).
+      const descSemCodigo = desc.replace(/^\d+\s*-\s*/, '');
+      if (descSemCodigo.includes('40')) qty=qtd*40;
+      else if (descSemCodigo.includes('4')) qty=qtd*4;
       else qty=qtd*40;
     } else if (marca==='MAGNIFICO') {
       if (desc.includes('10L')||desc.includes('10 L')) qty=qtd*10;
@@ -9596,6 +9605,7 @@ function _computeBrandQtyFromClients(clients) {
    duburguer@gmail.com              → acesso total (todos os vendedores)
    angella.focusfranquias@gmail.com → acesso total (todos os vendedores)
    klein.decio@hotmail.com          → acesso restrito (DÉCIO KLEIN / DECIO)
+   decio.normont@gmail.com          → acesso restrito (DÉCIO KLEIN / DECIO)
    menonrudinei@gmail.com           → acesso restrito (RUDINEI 1 / RUDINEI 3 / KLEYTON 1 / KLEYTON 3)
    tiago.costavibra@gmail.com       → acesso restrito (TIAGO 1 / TIAGO 3)
    ==================================================================== */
@@ -9606,6 +9616,7 @@ const _AUTH_ROLES = {
   'duburguer@gmail.com':              'admin',
   'angella.focusfranquias@gmail.com': 'admin',
   'klein.decio@hotmail.com':          'restricted',
+  'decio.normont@gmail.com':          'restricted',
   'menonrudinei@gmail.com':           'restricted',
   'tiago.costavibra@gmail.com':       'restricted'
 };
@@ -9614,6 +9625,7 @@ const _AUTH_ROLES = {
    Nomes normalizados (sem acento, maiúsculo) via _normalizeVendorName(). */
 const _RESTRICTED_VENDOR_TARGETS = {
   'klein.decio@hotmail.com':    ['DECIO KLEIN', 'DECIO'],
+  'decio.normont@gmail.com':    ['DECIO KLEIN', 'DECIO'],
   'menonrudinei@gmail.com':     ['RUDINEI 1', 'RUDINEI 3', 'KLEYTON 1', 'KLEYTON 3'],
   'tiago.costavibra@gmail.com': ['TIAGO 1', 'TIAGO 3']
 };
