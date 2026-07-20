@@ -2173,7 +2173,14 @@ function _transformRawRows(rows) {
         else if (descSemCodigo.includes('4'))  qtyBrand = qtd*4;
         else                                   qtyBrand = qtd*40;
       } else if (marca === 'MAGNIFICO') {
-        if (desc.includes('10L')||desc.includes('10 L')) qtyBrand = qtd*10;
+        // BUGFIX: o formato real da descrição é "[N LITROS]" (ex.: "731 - CREME
+        // AMERICANO [10 LITROS]"). Os padrões antigos ("10L"/"10 L"/regex 5L) não
+        // batem com "LITROS" por extenso dentro de colchetes, então o multiplicador
+        // nunca era aplicado e a quantidade ficava sem multiplicar (ex.: 30L em vez
+        // dos 175L reais). Extraímos o número direto de dentro dos colchetes.
+        const litrosMatch = desc.match(/\[\s*(\d+(?:[.,]\d+)?)\s*L(?:ITROS?)?\s*\]/);
+        if (litrosMatch)                                 qtyBrand = qtd*parseFloat(litrosMatch[1].replace(',','.'));
+        else if (desc.includes('10L')||desc.includes('10 L')) qtyBrand = qtd*10;
         else if (desc.match(/5[\s.]?L/))                 qtyBrand = qtd*5;
       }
       const ms = String(mes);
@@ -2335,7 +2342,10 @@ function _transformRawRows(rows) {
       else if (descSemCodigo.includes('4')) qty=qtd*4;
       else qty=qtd*40;
     } else if (marca==='MAGNIFICO') {
-      if (desc.includes('10L')||desc.includes('10 L')) qty=qtd*10;
+      // BUGFIX: mesma correção do cálculo por cliente — descrição real usa "[N LITROS]".
+      const litrosMatch = desc.match(/\[\s*(\d+(?:[.,]\d+)?)\s*L(?:ITROS?)?\s*\]/);
+      if (litrosMatch) qty=qtd*parseFloat(litrosMatch[1].replace(',','.'));
+      else if (desc.includes('10L')||desc.includes('10 L')) qty=qtd*10;
       else if (desc.match(/5[\s.]?L/)) qty=qtd*5;
     }
     BRAND_QTY_DATA[mes][marca] = (BRAND_QTY_DATA[mes][marca]||0)+qty;
