@@ -450,6 +450,9 @@ tr:hover td { background: rgba(197,233,212,.35); cursor: pointer; }
 .modal-title { font-size: 16px; font-weight: 600; margin-bottom: var(--sp5); color: #000; flex-shrink: 0; }
 .modal-fields { display: grid; gap: var(--sp4); overflow-y: auto; flex: 1; padding-right: 4px; }
 .modal-footer { display: flex; gap: var(--sp3); margin-top: var(--sp5); justify-content: flex-end; flex-shrink: 0; }
+.fieis-list-item { padding:9px 10px; font-size:12.5px; color:#000; border-bottom:1px solid rgba(0,30,60,.07); cursor:pointer; border-radius:6px; transition:background .12s; }
+.fieis-list-item:hover { background:rgba(168,204,168,.22); }
+.fieis-list-item:last-child { border-bottom:none; }
 .field-block label {
   display: block; font-size: 8px; letter-spacing: 1px; text-transform: uppercase;
   color: rgba(0,0,0,.55); margin-bottom: 5px; font-weight: 700;
@@ -1803,6 +1806,16 @@ tr:hover td { background: rgba(197,233,212,.35); cursor: pointer; }
   </div>
 </div>
 
+<div id="modal-fieis-lista" class="modal-backdrop" onclick="if(event.target===this) closeModalFieisLista()">
+  <div class="modal-box" style="max-width:420px;">
+    <div class="modal-title" id="modal-fieis-titulo">Clientes Fiéis</div>
+    <div class="modal-fields" id="modal-fieis-corpo" style="gap:0;"></div>
+    <div class="modal-footer">
+      <button class="btn btn-navy btn-sm" onclick="closeModalFieisLista()">Fechar</button>
+    </div>
+  </div>
+</div>
+
 <!-- DATA -->
 <script>
 // =====================================================================
@@ -2059,7 +2072,7 @@ function _computeGlobalFirstDates(allRows) {
   allRows.forEach(r => {
     const s = String(r['Situação']||'').trim().toLowerCase();
     if (s === 'cancelada' || s === 'cancelado' || s === 'denegada' || s === 'denegado') return;
-    const cliente = String(r['Cliente (Nome Fantasia)']||'').trim();
+    const cliente = String(r['Cliente (Nome Fantasia)']||'').replace(/\s+/g,' ').trim().toUpperCase();
     if (!cliente) return;
     const d = new Date(r['Data de Emissão (completa)']);
     if (isNaN(d.getTime())) return;
@@ -2085,7 +2098,14 @@ function _transformRawRows(rows) {
   const clientMap = {};
 
   valid.forEach(r => {
-    const cliente   = String(r['Cliente (Nome Fantasia)']||'').trim(); if (!cliente) return;
+    const clienteRaw = String(r['Cliente (Nome Fantasia)']||'').replace(/\s+/g,' ').trim(); if (!clienteRaw) return;
+    // BUGFIX: chave normalizada (maiúsculas + espaços colapsados) para agrupar o cliente.
+    // Antes, o nome cru era usado como chave — se a mesma empresa aparecesse grafada de
+    // forma levemente diferente em notas de meses distintos (ex.: "Bar 44 Poa" numa nota e
+    // "BAR 44 POA" noutra, ou com espaço duplo), o painel criava DOIS clientes diferentes,
+    // cada um só com os meses da sua própria grafia — por isso a tabela "Histórico Mensal"
+    // mostrava "Sem compra" em meses que na verdade tinham compra (só que sob a outra grafia).
+    const cliente = clienteRaw.toUpperCase();
     const rawDate   = r['Data de Emissão (completa)'];
     const date      = rawDate ? new Date(rawDate) : null; if (!date || isNaN(date.getTime())) return;
     const mes       = date.getMonth() + 1;
@@ -2241,7 +2261,7 @@ function _transformRawRows(rows) {
     mesRows.forEach(r => {
       const tm  = parseFloat(r['Total de Mercadoria'])||0;
       const nf  = String(r['Nota Fiscal']||'').trim();
-      const cli = String(r['Cliente (Nome Fantasia)']||'').trim();
+      const cli = String(r['Cliente (Nome Fantasia)']||'').replace(/\s+/g,' ').trim().toUpperCase();
       const fam = String(r['Família de Produto']||'').trim().toUpperCase();
       const mrc = String(r['Marca']||'').trim().toUpperCase();
       const ps  = parseFloat(r['Peso Líquido Total do Item (Kg)'])||0;
@@ -3476,7 +3496,7 @@ function _computeClientFlow(months) {
     RAW_ROWS_ALL.forEach(r => {
       const d = new Date(r['Data de Emissão (completa)']);
       if (!isNaN(d.getTime()) && d.getFullYear() === prevYear && d.getMonth() + 1 === prevMes) {
-        const cli = String(r['Cliente (Nome Fantasia)'] || '').trim();
+        const cli = String(r['Cliente (Nome Fantasia)'] || '').replace(/\s+/g,' ').trim().toUpperCase();
         if (cli && set.has(cli)) prevBoundary.add(cli);
       }
     });
@@ -7923,7 +7943,11 @@ function clearChurnFilters() {
 
 /* ====== CLIENTES EM ALERTA ====== */
 function computeAlertaClientes() {
-  const MESES = [1, 2, 3, 4, 5];
+  // BUGFIX: era hardcoded [1,2,3,4,5] (Jan–Mai). Com dados de Jun/Jul, o índice
+  // recSeq[lastMes-1] ficava fora do array (undefined) e o nome do mês também
+  // (array de nomes só tinha 5 posições) — por isso apareciam "undefined" e "R$ 0"
+  // para clientes cuja última compra foi em Jun/Jul. Agora usa o período real ativo.
+  const MESES = MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1, 2, 3, 4, 5];
   const alertas = [];
 
   CLIENTS.forEach(c => {
@@ -7937,36 +7961,37 @@ function computeAlertaClientes() {
     // Only analyze clients active in >= 2 months
     if (mesesAtivos.length < 2) return;
 
-    // Already a full churn (handled by perdidos)?
-    // Skip if ALL activity ended before mai but we handle them in perdidos
-    // We want clients still "in" the portfolio — last purchase reasonably recent
-    // Only flag if last purchase is within the window (>= mes 3) to be "active"
-    if (lastMes < 3) return;
+    // Já é um churn completo (tratado em "perdidos")? Só queremos clientes cuja
+    // última compra ainda está dentro da janela "recente" (últimos 3 meses do
+    // período ativo) — equivalente ao antigo "lastMes >= 3" num período de 5 meses.
+    const lastMesIdx = MESES.indexOf(lastMes);
+    if (lastMesIdx < MESES.length - 3) return;
 
     let nivel = null;
     let motivos = [];
 
-    // Get revenues in order
+    // Get revenues in order (indexado pela posição no período, não pelo número do mês)
     const recSeq = MESES.map(m => monthly.find(r=>r.mes===m)?.receita || null);
     const recAtivos = recSeq.filter(r=>r!==null);
     const maxRec = Math.max(...recAtivos);
-    const lastRec = recSeq[lastMes - 1];
-    const prevRec = lastMes > 1 ? recSeq[lastMes - 2] : null;
+    const lastRec = recSeq[lastMesIdx];
+    const prevRec = lastMesIdx > 0 ? recSeq[lastMesIdx - 1] : null;
 
-    // CRÍTICO: active 3+ months but silent in last 2 months
-    const ultimosDois = MESES.slice(3); // mes 4 e 5
-    const ativouAntes = mesesAtivos.some(m => m <= 3);
+    // CRÍTICO: ativo antes, mas silencioso nos 2 últimos meses do período
+    const ultimosDois = MESES.slice(-2);
+    const ativouAntes = mesesAtivos.some(m => !ultimosDois.includes(m));
     const sumiu2Meses = ultimosDois.every(m => !mesesAtivos.includes(m));
     if (ativouAntes && sumiu2Meses && mesesAtivos.length >= 2) {
       nivel = 'CRÍTICO';
-      motivos.push(`Ativo até ${['Jan','Fev','Mar','Abr','Mai'][lastMes-1]}, sem compra em Abr e Mai`);
+      motivos.push(`Ativo até ${CAL_MESES_ABREV[lastMes-1]}, sem compra em ${CAL_MESES_ABREV[ultimosDois[0]-1]} e ${CAL_MESES_ABREV[ultimosDois[1]-1]}`);
     }
 
     if (!nivel) {
-      // CRÍTICO: active 3+ months but last activity was ≤ mes 3 (not Apr or May)
-      if (mesesAtivos.length >= 3 && lastMes === 3) {
+      // CRÍTICO: ativo em 3+ meses, mas a última atividade foi no 3º mês a partir do fim
+      const terceiroDoFim = MESES[MESES.length - 3];
+      if (mesesAtivos.length >= 3 && lastMes === terceiroDoFim) {
         nivel = 'CRÍTICO';
-        motivos.push(`Ativo em ${mesesAtivos.length} meses, última compra em Mar`);
+        motivos.push(`Ativo em ${mesesAtivos.length} meses, última compra em ${CAL_MESES_ABREV[(lastMes)-1]}`);
       }
     }
 
@@ -7996,12 +8021,15 @@ function computeAlertaClientes() {
     }
 
     if (!nivel) {
-      // MÉDIO: missed 1 recent month (mes 4 or 5) but active before
-      const missedRecent = (mesesAtivos.includes(3) || mesesAtivos.includes(2)) &&
-        (!mesesAtivos.includes(4) || !mesesAtivos.includes(5)) &&
+      // MÉDIO: comprou nos 2 meses anteriores à janela recente, mas faltou em algum dos 2 últimos meses
+      const antesDoisMeses = MESES.slice(-4, -2);
+      const missedRecent = antesDoisMeses.some(m => mesesAtivos.includes(m)) &&
+        ultimosDois.some(m => !mesesAtivos.includes(m)) &&
         mesesAtivos.length >= 3;
       if (missedRecent) {
-        const missedMonth = !mesesAtivos.includes(5) ? 'Mai' : 'Abr';
+        const missedMonth = !mesesAtivos.includes(ultimosDois[ultimosDois.length-1])
+          ? CAL_MESES_ABREV[ultimosDois[ultimosDois.length-1]-1]
+          : CAL_MESES_ABREV[ultimosDois[0]-1];
         nivel = 'MÉDIO';
         motivos.push(`Não comprou em ${missedMonth} mas estava ativo antes`);
       }
@@ -8029,8 +8057,8 @@ function computeAlertaClientes() {
 
     if (nivel) {
       // Compute trend text
-      const nonNull = recSeq.map((v,i) => v!==null ? { m:i+1, v } : null).filter(Boolean);
-      const trend = nonNull.map(({m,v}) => `${['Jan','Fev','Mar','Abr','Mai'][m-1]}: ${fmt(v)}`).join(' → ');
+      const nonNull = recSeq.map((v,i) => v!==null ? { m:MESES[i], v } : null).filter(Boolean);
+      const trend = nonNull.map(({m,v}) => `${CAL_MESES_ABREV[m-1]}: ${fmt(v)}`).join(' → ');
       alertas.push({
         cli: c.cliente,
         cidade: c.cidade,
@@ -8095,7 +8123,7 @@ function renderClientesAlerta() {
     const nc = nivelConfig[a.nivel];
     const nivelBadge = `<span style="display:inline-block;padding:2px 8px;border-radius:var(--r-pill);font-size:8px;font-weight:700;background:${nc.bg};color:${nc.color};">${a.nivel}</span>`;
     const rowBg = i%2===0?'background:#fff;':'background:rgba(0,30,60,.02);';
-    const lastMesNome = ['Jan','Fev','Mar','Abr','Mai'][a.lastMes-1];
+    const lastMesNome = CAL_MESES_ABREV[a.lastMes-1] || String(a.lastMes);
     rows += `<tr style="${rowBg}" onclick="goToCard('${a.cli.replace(/'/g,"\\'")}')">
       <td style="text-align:center;">${nivelBadge}</td>
       <td style="font-weight:600;max-width:240px;overflow:hidden;text-overflow:ellipsis;">${a.cli.length>40?a.cli.slice(0,39)+'…':a.cli}</td>
@@ -8122,6 +8150,9 @@ function renderClientesAlerta() {
 }
 
 /* ====== FIDELIDADE E CHURN ====== */
+let _fieisListaPorMes = []; // nomes dos clientes fiéis por mês (preenchido em renderFidelidadeCharts)
+let _fieisMesesNomes  = [];
+
 function renderFidelidadeCharts() {
   const MN       = MONTHLY_KPIS.map(d => d.nome);
   const MESES    = MONTHLY_KPIS.map(d => d.mes);
@@ -8141,21 +8172,30 @@ function renderFidelidadeCharts() {
   // ── Clientes Fiéis: compraram em TODOS os meses 1..upTo ──
   const leaisCount   = [];
   const leaisReceita = [];
+  const leaisLista   = []; // nomes dos clientes fiéis em cada mês (p/ clique no gráfico)
 
   MESES.forEach(upTo => {
     const needed = MESES.filter(m => m <= upTo);
     let cnt = 0, rec = 0;
+    const nomes = [];
     Object.entries(clientMonthSet).forEach(([cli, active]) => {
       if (needed.every(m => active.has(m))) {
         cnt++;
+        nomes.push(cli);
         const arr = CLIENT_MONTHLY[cli] || [];
         const entry = arr.find(x => x.mes === upTo);
         if (entry) rec += entry.receita;
       }
     });
+    nomes.sort((a,b) => a.localeCompare(b, 'pt-BR'));
     leaisCount.push(cnt);
     leaisReceita.push(rec);
+    leaisLista.push(nomes);
   });
+
+  // Guarda para o clique no gráfico (abrirListaFieis)
+  _fieisListaPorMes = leaisLista;
+  _fieisMesesNomes  = MN;
 
   // ── Clientes Perdidos: compraram em M-1 mas NÃO em M ──
   const perdidosCount = [];
@@ -8224,11 +8264,19 @@ function renderFidelidadeCharts() {
       }]
     },
     options:{
+      onClick: (evt, elements) => {
+        if (!elements.length) return;
+        abrirListaFieis(elements[0].index);
+      },
+      onHover: (evt, elements) => {
+        if (evt.native?.target) evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+      },
       plugins:{
         legend:{display:false},
         tooltip:{callbacks:{
           title: items => `Fiéis até ${MN[items[0].dataIndex]}`,
-          label: ctx  => `${ctx.raw} clientes compraram todos os meses de Jan a ${MN[ctx.dataIndex]}`
+          label: ctx  => `${ctx.raw} clientes compraram todos os meses de Jan a ${MN[ctx.dataIndex]}`,
+          afterLabel: () => 'Clique na coluna para ver os nomes'
         }}
       },
       scales:{
@@ -8435,6 +8483,28 @@ function renderFidelidadeCharts() {
 
   // ── Gráfico 3: Clientes Perdidos — REMOVIDO (movido para aba Carteira)
   // O gráfico e tabela de clientes perdidos agora estão na Aba 02 · Carteira
+}
+
+/** Abre modal com a lista de nomes dos clientes fiéis até o mês clicado no gráfico. */
+function abrirListaFieis(idx) {
+  const nomes = _fieisListaPorMes[idx] || [];
+  const mes   = _fieisMesesNomes[idx]  || '';
+  const mesInicial = _fieisMesesNomes[0] || 'Jan';
+  const titEl  = document.getElementById('modal-fieis-titulo');
+  const corpoEl = document.getElementById('modal-fieis-corpo');
+  if (titEl)  titEl.textContent = `Clientes Fiéis — ${mesInicial} a ${mes} (${nomes.length})`;
+  if (corpoEl) {
+    corpoEl.innerHTML = nomes.length
+      ? nomes.map(n => `<div class="fieis-list-item" onclick="closeModalFieisLista();goToCard('${n.replace(/'/g,"\\'")}')">${n}</div>`).join('')
+      : '<div style="padding:24px 4px;text-align:center;color:rgba(0,0,0,.4);font-size:12px;">Nenhum cliente fiel neste período.</div>';
+  }
+  const modalEl = document.getElementById('modal-fieis-lista');
+  if (modalEl) modalEl.classList.add('open');
+}
+
+function closeModalFieisLista() {
+  const modalEl = document.getElementById('modal-fieis-lista');
+  if (modalEl) modalEl.classList.remove('open');
 }
 
 /* ====== CRM ====== */
