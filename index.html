@@ -3979,18 +3979,20 @@ function renderClientCardInit() {
 }
 
 /* ====== HELPER — QUANTIDADE POR MARCA DIST POR CLIENTE ====== */
-// Calcula a quantidade estimada por marca distribuidora para um cliente específico,
-// proporcional à sua participação na receita global de cada marca.
-function computeClientDistQty(distBrandsArr) {
-  const MESES = MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5];
-  if (typeof BRAND_QTY_DATA === 'undefined' || typeof BRAND_QTY_UNIT === 'undefined') return [];
+// Calcula a quantidade REAL por marca distribuidora para um cliente específico,
+// usando o índice CLIENT_BRAND_QTY (real, somado direto das notas desse cliente).
+// BUGFIX: antes ratava a quantidade GLOBAL de mercado proporcionalmente à participação
+// de receita do cliente — o que fazia essa aba (que deveria mostrar só dados do cliente)
+// exibir números que na verdade vinham de TODOS os clientes da base.
+function computeClientDistQty(distBrandsArr, clientBrandQty, mesesArr) {
+  const MESES = mesesArr || (MONTHLY_KPIS.length ? MONTHLY_KPIS.map(d => d.mes) : [1,2,3,4,5]);
+  const cbq = clientBrandQty || {};
+  if (typeof BRAND_QTY_UNIT === 'undefined') return [];
   return distBrandsArr
     .filter(p => BRAND_QTY_UNIT[p.marca])
     .map(p => {
-      const globalRev = MESES.reduce((s, m) => s + ((BRAND_DATA[String(m)] || {})[p.marca] || 0), 0);
-      const share = globalRev > 0 ? p.receita / globalRev : 0;
-      const qtys  = MESES.map(m => +((((BRAND_QTY_DATA[String(m)] || {})[p.marca] || 0) * share).toFixed(1)));
-      const total  = +qtys.reduce((s, v) => s + v, 0).toFixed(1);
+      const qtys  = MESES.map(m => +(((cbq[String(m)] || {})[p.marca]) || 0).toFixed(1));
+      const total = +qtys.reduce((s, v) => s + v, 0).toFixed(1);
       return { marca: p.marca, unit: BRAND_QTY_UNIT[p.marca], qtys, total };
     });
 }
@@ -4202,7 +4204,7 @@ function renderClientCard(clientName) {
       ? '<span style="font-size:8px;font-weight:600;color:#4A7040;background:rgba(74,112,64,.12);border-radius:3px;padding:1px 5px;margin-left:5px;">L calc.</span>'
       : '<span style="font-size:8px;font-weight:600;color:#2c4d8f;background:rgba(44,77,143,.1);border-radius:3px;padding:1px 5px;margin-left:5px;">un.</span>';
 
-    const clientQtyData = computeClientDistQty(distBrands);
+    const clientQtyData = computeClientDistQty(distBrands, _useClientBrandQtyF[clientName], MESES);
     const qtySection = clientQtyData.length === 0 ? '' : (() => {
       const qRows = clientQtyData.map((item, idx) => {
         const bg = idx % 2 === 0 ? 'background:#f8fdf9;' : 'background:#FFFFFF;';
@@ -4215,11 +4217,13 @@ function renderClientCard(clientName) {
         + MN_L.map(mn => '<th style="text-align:right;">' + mn + '</th>').join('')
         + '<th style="text-align:right;">Total ' + selectedYear + '</th><th>Unidade</th></tr></thead>';
 
-      // ── Tabela 4: Preço Médio = Receita ÷ Quantidade ──
+      // ── Tabela 4: Preço Médio = Receita ÷ Quantidade (REAL do cliente) ──
       const MESES_L = MESES;
+      const _cbRec4 = _useClientBrandRecF[clientName] || {};
+      const _cbQty4 = _useClientBrandQtyF[clientName] || {};
       function priceOf(marca, m) {
-        const rec = (BRAND_DATA[String(m)] || {})[marca] || 0;
-        const qty = (BRAND_QTY_DATA[String(m)] || {})[marca] || 0;
+        const rec = (_cbRec4[String(m)] || {})[marca] || 0;
+        const qty = (_cbQty4[String(m)] || {})[marca] || 0;
         return (rec > 0 && qty > 0) ? rec / qty : null;
       }
       function pCell(price, prev, unit) {
@@ -4258,17 +4262,17 @@ function renderClientCard(clientName) {
           + '<td style="color:rgba(0,0,0,.5);font-size:11px;">R$' + sfx + '</td></tr>';
       }).join('');
 
-      return '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 3 — Quantidade por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(estimativa proporcional à receita)</span></div>'
+      return '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 3 — Quantidade por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(real, somada direto das notas do cliente)</span></div>'
         + '<div class="cdd-tbl-wrap"><table>' + qHead + '<tbody>' + qRows + '</tbody></table></div>'
         + '<div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:10px;">'
         + '<div class="cdd-card-title">Quantidade por Marca Distribuidora — Evolução Mensal</div>'
-        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Estimativa proporcional à participação de receita do cliente. SCAR · VIGOR · MCCOY´S em kg &nbsp;|&nbsp; CAPELISTA · HELA · MARIA ANGU · NEGO VEIO em un. &nbsp;|&nbsp; DISIPAN em un. calculadas &nbsp;|&nbsp; MAGNIFICO em L calculados.</div>'
+        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Quantidade real comprada pelo cliente. SCAR · VIGOR · MCCOY´S em kg &nbsp;|&nbsp; CAPELISTA · HELA · MARIA ANGU · NEGO VEIO em un. &nbsp;|&nbsp; DISIPAN em un. calculadas &nbsp;|&nbsp; MAGNIFICO em L calculados.</div>'
         + '<canvas id="card_dist_qty" height="100"></canvas></div>'
         + '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 4 — Preço Médio por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(Receita ÷ Quantidade)</span></div>'
         + '<div class="cdd-tbl-wrap"><table>' + pHead + '<tbody>' + pRows + '</tbody></table></div>'
         + '<div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:0;">'
         + '<div class="cdd-card-title">Preço Médio por Marca Distribuidora — Evolução Mensal (R$/unidade)</div>'
-        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Preço médio de mercado por marca (Receita Global ÷ Quantidade Global). <span style="color:var(--danger);">▲ vermelho = alta</span> · <span style="color:var(--success);">▼ verde = queda</span>.</div>'
+        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Preço médio pago por este cliente, por marca (Receita do cliente ÷ Quantidade do cliente). <span style="color:var(--danger);">▲ vermelho = alta</span> · <span style="color:var(--success);">▼ verde = queda</span>.</div>'
         + '<canvas id="card_dist_preco_agr" height="100"></canvas></div>';
     })();
 
@@ -4495,27 +4499,36 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
     }
   }
 
-  /* Chart 9 — Receita por marca de carne */
+  /* Chart 9 — Receita por marca de carne (REAL: receita real do cliente por marca/mês) */
   const carneRecCvs = document.getElementById('card_carne_rec');
   if (carneRecCvs && carneBrands && carneBrands.length > 0 && totalCarneR > 0) {
     destroyChart('card_carne_rec');
-    const ds9 = carneBrands.map((b,i) => { const pct = b.receita / totalCarneR; return mkLineDataset2(b.marca, MN.map((_,m) => mInd[m]>0 ? +(mInd[m]*pct) : null), CARNE_PALETTE, i); });
+    const ds9 = carneBrands.map((b,i) => {
+      const data = MESES.map(m => { const v = (clientBrandRec[String(m)] || {})[b.marca] || 0; return v > 0 ? v : null; });
+      return mkLineDataset2(b.marca, data, CARNE_PALETTE, i);
+    });
     charts['card_carne_rec'] = mkLineChart2(carneRecCvs, ds9, v=>'R$'+(v/1000).toFixed(1)+'k', ctx=>` ${ctx.dataset.label}: R$ ${ctx.raw?.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0})}`);
   }
 
-  /* Chart 10 — Kg por marca de carne */
+  /* Chart 10 — Kg por marca de carne (REAL: kg real do cliente por marca/mês) */
   const carneKgCvs = document.getElementById('card_carne_kg');
   if (carneKgCvs && carneBrands && carneBrands.length > 0 && totalCarneR > 0) {
     destroyChart('card_carne_kg');
-    const ds10 = carneBrands.map((b,i) => { const pct = b.receita / totalCarneR; return mkLineDataset2(b.marca, MN.map((_,m) => mKg[m]>0 ? +(mKg[m]*pct).toFixed(1) : null), CARNE_PALETTE, i); });
+    const ds10 = carneBrands.map((b,i) => {
+      const data = MESES.map(m => { const v = (clientBrandQty[String(m)] || {})[b.marca] || 0; return v > 0 ? +v.toFixed(1) : null; });
+      return mkLineDataset2(b.marca, data, CARNE_PALETTE, i);
+    });
     charts['card_carne_kg'] = mkLineChart2(carneKgCvs, ds10, v=>v.toLocaleString('pt-BR',{maximumFractionDigits:0})+' kg', ctx=>` ${ctx.dataset.label}: ${ctx.raw?.toLocaleString('pt-BR',{maximumFractionDigits:1})} kg`);
   }
 
-  /* Chart 11 — Receita por marca distribuidora */
+  /* Chart 11 — Receita por marca distribuidora (REAL: receita real do cliente por marca/mês) */
   const distRecCvs = document.getElementById('card_dist_rec');
   if (distRecCvs && distBrands && distBrands.length > 0 && totalDistR > 0) {
     destroyChart('card_dist_rec');
-    const ds11 = distBrands.map((b,i) => { const pct = b.receita / totalDistR; return mkLineDataset2(b.marca, MN.map((_,m) => mDist[m]>0 ? +(mDist[m]*pct) : null), DIST_PALETTE, i); });
+    const ds11 = distBrands.map((b,i) => {
+      const data = MESES.map(m => { const v = (clientBrandRec[String(m)] || {})[b.marca] || 0; return v > 0 ? v : null; });
+      return mkLineDataset2(b.marca, data, DIST_PALETTE, i);
+    });
     charts['card_dist_rec'] = mkLineChart2(distRecCvs, ds11, v=>'R$'+(v/1000).toFixed(1)+'k', ctx=>` ${ctx.dataset.label}: R$ ${ctx.raw?.toLocaleString('pt-BR',{minimumFractionDigits:0,maximumFractionDigits:0})}`);
   }
 
@@ -4523,7 +4536,7 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
   const distQtyCvs = document.getElementById('card_dist_qty');
   if (distQtyCvs && distBrands && distBrands.length > 0) {
     destroyChart('card_dist_qty');
-    const clientQtyData = computeClientDistQty(distBrands);
+    const clientQtyData = computeClientDistQty(distBrands, clientBrandQty, MESES);
     if (clientQtyData.length > 0) {
       const QTY_PALETTE = [
         { border:'#0F4245', bg:'rgba(15,66,69,.10)' },
@@ -4570,7 +4583,7 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
   const distPrecoAgrCvs = document.getElementById('card_dist_preco_agr');
   if (distPrecoAgrCvs && distBrands && distBrands.length > 0) {
     destroyChart('card_dist_preco_agr');
-    const clientQtyData2 = computeClientDistQty(distBrands);
+    const clientQtyData2 = computeClientDistQty(distBrands, clientBrandQty, MESES);
     if (clientQtyData2.length > 0) {
       const PRICE_PALETTE = [
         { border:'#0F4245', bg:'rgba(15,66,69,.08)' },
@@ -4587,8 +4600,8 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
         const col = PRICE_PALETTE[i % PRICE_PALETTE.length];
         const sfx = item.unit === 'kg' ? '/kg' : item.unit === 'L' ? '/L' : '/un.';
         const prices = MESES.map(m => {
-          const rec = (BRAND_DATA[String(m)] || {})[item.marca] || 0;
-          const qty = (BRAND_QTY_DATA[String(m)] || {})[item.marca] || 0;
+          const rec = (clientBrandRec[String(m)] || {})[item.marca] || 0;
+          const qty = (clientBrandQty[String(m)] || {})[item.marca] || 0;
           return (rec > 0 && qty > 0) ? +(rec/qty).toFixed(2) : null;
         });
         return {
@@ -5707,12 +5720,12 @@ function cddOpen(name) {
     </div>
     <div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
       <div class="cdd-card-title">Receita por Marca de Carne — Evolução Mensal (R$)</div>
-      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Receita estimada por marca a partir da proporção de mix acumulado.</div>
+      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Receita real da marca para este cliente, por mês.</div>
       <canvas id="cdd_carne_rec" height="100"></canvas>
     </div>
     <div class="cdd-card cdd-card-full" style="margin-bottom:0;">
       <div class="cdd-card-title">Quantidade por Marca de Carne — Evolução Mensal (kg)</div>
-      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Kg estimado por marca a partir da proporção de mix acumulado.</div>
+      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Kg real vendido da marca para este cliente, por mês.</div>
       <canvas id="cdd_carne_kg" height="100"></canvas>
     </div>`;
   };
@@ -5731,7 +5744,7 @@ function cddOpen(name) {
       ? '<span style="font-size:8px;font-weight:600;color:#4A7040;background:rgba(74,112,64,.12);border-radius:3px;padding:1px 5px;margin-left:5px;">L calc.</span>'
       : '<span style="font-size:8px;font-weight:600;color:#2c4d8f;background:rgba(44,77,143,.1);border-radius:3px;padding:1px 5px;margin-left:5px;">un.</span>';
 
-    const clientQtyData = computeClientDistQty(distBrands);
+    const clientQtyData = computeClientDistQty(distBrands, _useClientBrandQtyF[name], MESES);
     const qtySection = clientQtyData.length === 0 ? '' : (() => {
       const qRows = clientQtyData.map((item, idx) => {
         const bg = idx % 2 === 0 ? 'background:#f8fdf9;' : 'background:#FFFFFF;';
@@ -5744,11 +5757,13 @@ function cddOpen(name) {
         + MN_L.map(mn => '<th style="text-align:right;">' + mn + '</th>').join('')
         + '<th style="text-align:right;">Total ' + selectedYear + '</th><th>Unidade</th></tr></thead>';
 
-      // ── Tabela 4: Preço Médio = Receita ÷ Quantidade ──
+      // ── Tabela 4: Preço Médio = Receita ÷ Quantidade (REAL do cliente) ──
       const MESES_L = MESES;
+      const _cbRec4 = _useClientBrandRecF[name] || {};
+      const _cbQty4 = _useClientBrandQtyF[name] || {};
       function priceOf(marca, m) {
-        const rec = (BRAND_DATA[String(m)] || {})[marca] || 0;
-        const qty = (BRAND_QTY_DATA[String(m)] || {})[marca] || 0;
+        const rec = (_cbRec4[String(m)] || {})[marca] || 0;
+        const qty = (_cbQty4[String(m)] || {})[marca] || 0;
         return (rec > 0 && qty > 0) ? rec / qty : null;
       }
       function pCell(price, prev, unit) {
@@ -5787,17 +5802,17 @@ function cddOpen(name) {
           + '<td style="color:rgba(0,0,0,.5);font-size:11px;">R$' + sfx + '</td></tr>';
       }).join('');
 
-      return '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 3 — Quantidade por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(estimativa proporcional à receita)</span></div>'
+      return '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 3 — Quantidade por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(real, somada direto das notas do cliente)</span></div>'
         + '<div class="cdd-tbl-wrap"><table>' + qHead + '<tbody>' + qRows + '</tbody></table></div>'
         + '<div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:10px;">'
         + '<div class="cdd-card-title">Quantidade por Marca Distribuidora — Evolução Mensal</div>'
-        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Estimativa proporcional à participação de receita do cliente. SCAR · VIGOR · MCCOY´S em kg &nbsp;|&nbsp; CAPELISTA · HELA · MARIA ANGU · NEGO VEIO em un. &nbsp;|&nbsp; DISIPAN em un. calculadas &nbsp;|&nbsp; MAGNIFICO em L calculados.</div>'
+        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Quantidade real comprada pelo cliente. SCAR · VIGOR · MCCOY´S em kg &nbsp;|&nbsp; CAPELISTA · HELA · MARIA ANGU · NEGO VEIO em un. &nbsp;|&nbsp; DISIPAN em un. calculadas &nbsp;|&nbsp; MAGNIFICO em L calculados.</div>'
         + '<canvas id="cdd_dist_qty" height="100"></canvas></div>'
         + '<div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 4 — Preço Médio por Marca Distribuidora <span style="font-weight:400;opacity:.65;">(Receita ÷ Quantidade)</span></div>'
         + '<div class="cdd-tbl-wrap"><table>' + pHead + '<tbody>' + pRows + '</tbody></table></div>'
         + '<div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:0;">'
         + '<div class="cdd-card-title">Preço Médio por Marca Distribuidora — Evolução Mensal (R$/unidade)</div>'
-        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Preço médio de mercado por marca (Receita Global ÷ Quantidade Global). <span style="color:var(--danger);">▲ vermelho = alta</span> · <span style="color:var(--success);">▼ verde = queda</span>.</div>'
+        + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:8px;">Preço médio pago por este cliente, por marca (Receita do cliente ÷ Quantidade do cliente). <span style="color:var(--danger);">▲ vermelho = alta</span> · <span style="color:var(--success);">▼ verde = queda</span>.</div>'
         + '<canvas id="cdd_dist_preco_agr" height="100"></canvas></div>';
     })();
 
@@ -5810,7 +5825,7 @@ function cddOpen(name) {
       + '</tbody></table></div>'
       + '<div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:' + (clientQtyData.length > 0 ? '10px' : '0') + ';">'
       + '<div class="cdd-card-title">Receita por Marca Distribuidora — Evolução Mensal (R$)</div>'
-      + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Receita estimada por marca a partir da proporção de mix acumulado.</div>'
+      + '<div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Receita real da marca para este cliente, por mês.</div>'
       + '<canvas id="cdd_dist_rec" height="100"></canvas></div>'
       + qtySection;
   };
@@ -6206,7 +6221,7 @@ function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, m
   const distQtyCvs = document.getElementById('cdd_dist_qty');
   if (distQtyCvs && distBrands && distBrands.length > 0) {
     destroyChart('cdd_dist_qty');
-    const clientQtyData = computeClientDistQty(distBrands);
+    const clientQtyData = computeClientDistQty(distBrands, clientBrandQty, MESES);
     if (clientQtyData.length > 0) {
       const QTY_PALETTE = [
         { border:'#0F4245', bg:'rgba(15,66,69,.10)' },
@@ -6253,7 +6268,7 @@ function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, m
   const distPrecoAgrCvs = document.getElementById('cdd_dist_preco_agr');
   if (distPrecoAgrCvs && distBrands && distBrands.length > 0) {
     destroyChart('cdd_dist_preco_agr');
-    const clientQtyData2 = computeClientDistQty(distBrands);
+    const clientQtyData2 = computeClientDistQty(distBrands, clientBrandQty, MESES);
     if (clientQtyData2.length > 0) {
       const PRICE_PALETTE = [
         { border:'#0F4245', bg:'rgba(15,66,69,.08)' },
@@ -6270,8 +6285,8 @@ function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, m
         const col = PRICE_PALETTE[i % PRICE_PALETTE.length];
         const sfx = item.unit === 'kg' ? '/kg' : item.unit === 'L' ? '/L' : '/un.';
         const prices = MESES.map(m => {
-          const rec = (BRAND_DATA[String(m)] || {})[item.marca] || 0;
-          const qty = (BRAND_QTY_DATA[String(m)] || {})[item.marca] || 0;
+          const rec = (clientBrandRec[String(m)] || {})[item.marca] || 0;
+          const qty = (clientBrandQty[String(m)] || {})[item.marca] || 0;
           return (rec > 0 && qty > 0) ? +(rec/qty).toFixed(2) : null;
         });
         return {
