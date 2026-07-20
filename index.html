@@ -5521,6 +5521,7 @@ function cddOpen(name) {
   _cddCurrentName = name;
   CDD_CHARTS.forEach(id => destroyChart(id));
   _renderMFBar('cdd', 'cdd-date-filter-bar');
+  const _periodoStr = _mfGetLabel('cdd') || 'Acumulado';
 
   // Usa dados filtrados por período se o CDD tiver filtro próprio
   const _cddLocalData  = _getCDDLocalData();
@@ -5886,15 +5887,15 @@ function cddOpen(name) {
   document.getElementById('cdd-body').innerHTML = `
     <!-- KPIs -->
     <div class="cdd-kpis">
-      <div class="cdd-kpi"><div class="cdd-kpi-label">Receita Total 2026</div><div class="cdd-kpi-val" style="color:#000;">${fmt(c.receita)}</div></div>
+      <div class="cdd-kpi"><div class="cdd-kpi-label">Receita Total — ${_periodoStr}</div><div class="cdd-kpi-val" style="color:#000;">${fmt(c.receita)}</div></div>
       <div class="cdd-kpi"><div class="cdd-kpi-label">Rec. Indústria</div><div class="cdd-kpi-val">${fmt(c.rev_ind)}</div></div>
       <div class="cdd-kpi"><div class="cdd-kpi-label">Rec. Distribuidora</div><div class="cdd-kpi-val" style="color:${c.rev_dist>0?'#2c4d8f':'rgba(0,0,0,.25)'};">${fmt(c.rev_dist)}</div></div>
       <div class="cdd-kpi"><div class="cdd-kpi-label">Kg Carne</div><div class="cdd-kpi-val">${fmtKg(c.kg_carne)}</div></div>
       <div class="cdd-kpi"><div class="cdd-kpi-label">Nº Pedidos</div><div class="cdd-kpi-val">${c.nfs}</div></div>
       <div class="cdd-kpi"><div class="cdd-kpi-label">Ticket Médio</div><div class="cdd-kpi-val">${fmtDec(c.ticket_medio)}</div></div>
-      <div class="cdd-kpi"><div class="cdd-kpi-label">Meses Ativo</div><div class="cdd-kpi-val">${c.meses_ativo}<span style="font-size:10px;color:rgba(0,0,0,.4);">/5</span></div></div>
+      <div class="cdd-kpi"><div class="cdd-kpi-label">Meses Ativo</div><div class="cdd-kpi-val">${c.meses_ativo}<span style="font-size:10px;color:rgba(0,0,0,.4);">/${MESES.length}</span></div></div>
       <div class="cdd-kpi" style="display:flex;flex-direction:column;justify-content:center;align-items:flex-start;">
-        <div class="cdd-kpi-label">Fidelidade 2026</div>
+        <div class="cdd-kpi-label">Fidelidade — ${_periodoStr}</div>
         <span class="cdd-fiel-badge ${isFiel?'fiel':'nao-fiel'}" style="margin-top:4px;">
           ${isFiel ? '⭐ Cliente Fiel' : '⚠ Não Fiel'}
         </span>
@@ -5904,7 +5905,7 @@ function cddOpen(name) {
 
     <!-- Cluster Evolution -->
     <div class="cdd-evol-box">
-      <span style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:rgba(0,0,0,.5);flex-shrink:0;">Evolução cluster 2026:</span>
+      <span style="font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;color:rgba(0,0,0,.5);flex-shrink:0;">Evolução cluster — ${_periodoStr}:</span>
       <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${cEvolHtml}</span>
     </div>
 
