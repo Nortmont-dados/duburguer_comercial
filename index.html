@@ -3988,8 +3988,20 @@ function renderClientCard(clientName) {
   if (!cFallback) return;
   const cData = c || cFallback;
 
-  const monthly  = _useClientMon[clientName]  || [];
-  const products = _useClientProd[clientName] || [];
+  // BUGFIX: se o cliente não foi encontrado no recorte local filtrado (usingFallback=true),
+  // os totais (cData) vêm dos dados GLOBAIS. Por consistência, o mensal/produtos/meses
+  // ativos também devem vir dos dados GLOBAIS — caso contrário a tabela "Histórico Mensal"
+  // e os gráficos mostravam "Sem compra em todos os meses" mesmo quando o cliente tinha
+  // KPIs (receita, kg etc.) preenchidos, porque misturava mensal local (vazio) com totais globais.
+  const usingFallback  = !c;
+  const _useClientMonF  = usingFallback ? CLIENT_MONTHLY  : _useClientMon;
+  const _useClientProdF = usingFallback ? CLIENT_PRODUCTS : _useClientProd;
+  const _useMKPISF      = usingFallback ? MONTHLY_KPIS    : _useMKPIS;
+  const _useClientBrandRecF = usingFallback ? CLIENT_BRAND_REC : (typeof _localData?.CLIENT_BRAND_REC !== 'undefined' ? _localData.CLIENT_BRAND_REC : CLIENT_BRAND_REC);
+  const _useClientBrandQtyF = usingFallback ? CLIENT_BRAND_QTY : (typeof _localData?.CLIENT_BRAND_QTY !== 'undefined' ? _localData.CLIENT_BRAND_QTY : CLIENT_BRAND_QTY);
+
+  const monthly  = _useClientMonF[clientName]  || [];
+  const products = _useClientProdF[clientName] || [];
   const mMap = {};
   monthly.forEach(m => { mMap[m.mes] = m; });
 
@@ -3997,9 +4009,9 @@ function renderClientCard(clientName) {
   const _periodoStr = _mfGetLabel('cart') || 'Acumulado';
 
   // Usa os meses do período selecionado (ou os meses do cliente se MONTHLY_KPIS estiver vazio)
-  const MESES = _useMKPIS.length ? _useMKPIS.map(d => d.mes)
+  const MESES = _useMKPISF.length ? _useMKPISF.map(d => d.mes)
               : monthly.map(m => m.mes).sort((a,b)=>a-b);
-  const MN    = _useMKPIS.length ? _useMKPIS.map(d => d.nome)
+  const MN    = _useMKPISF.length ? _useMKPISF.map(d => d.nome)
               : MESES.map(m => ['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m]||String(m));
 
   const indPct  = cData.receita > 0 ? cData.rev_ind / cData.receita : 0;
@@ -4102,26 +4114,40 @@ function renderClientCard(clientName) {
     return `<span style="display:inline-flex;flex-direction:column;align-items:center;gap:2px;"><span style="font-size:8px;color:rgba(0,0,0,.45);">${mn}</span><span class="badge badge-cluster-${cl.toLowerCase()}" style="font-size:9px;padding:2px 7px;">${cl}</span></span>`;
   }).join('<span style="color:rgba(0,0,0,.2);margin:0 2px;align-self:center;">→</span>');
 
-  const mkCarneTbl = () => carneBrands.length === 0 ? '' : `
+  const mkCarneTbl = () => {
+    if (carneBrands.length === 0) return '';
+    // Kg REAL por marca (Peso Líquido Total do Item, somado direto por marca/mês),
+    // ao invés de ratear o kg total do cliente proporcionalmente à receita — o rateio
+    // proporcional faz o R$/kg dar sempre o mesmo valor para todas as marcas (bug).
+    const cbq = _useClientBrandQtyF[clientName] || {};
+    const brandKgReal = {};
+    carneBrands.forEach(p => {
+      let kgSum = 0;
+      MESES.forEach(m => { kgSum += (cbq[String(m)] || {})[p.marca] || 0; });
+      brandKgReal[p.marca] = kgSum;
+    });
+    const totalKgReal = carneBrands.reduce((s,p) => s + (brandKgReal[p.marca] || 0), 0);
+    const usarKgReal  = totalKgReal > 0;
+    return `
     <div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 1 — Performance por Marca de Carne (Produto Pronto)</div>
     <div class="cdd-tbl-wrap">
       <table>
-        <thead><tr><th>Marca</th><th style="text-align:right;">Receita R$</th><th style="text-align:right;">Kg Estimado</th><th style="text-align:right;">% Carne</th><th style="text-align:right;">R$/kg Est.</th></tr></thead>
+        <thead><tr><th>Marca</th><th style="text-align:right;">Receita R$</th><th style="text-align:right;">Kg${usarKgReal ? '' : ' Estimado'}</th><th style="text-align:right;">% Carne</th><th style="text-align:right;">R$/kg${usarKgReal ? '' : ' Est.'}</th></tr></thead>
         <tbody>
           ${carneBrands.map(p => {
-            const kgEst = totalCarneR > 0 ? (p.receita / totalCarneR) * cData.kg_carne : 0;
-            const prEst = kgEst > 0 ? p.receita / kgEst : 0;
+            const kg    = usarKgReal ? (brandKgReal[p.marca] || 0) : (totalCarneR > 0 ? (p.receita / totalCarneR) * cData.kg_carne : 0);
+            const preco = kg > 0 ? p.receita / kg : 0;
             const pct   = totalCarneR > 0 ? (p.receita / totalCarneR * 100).toFixed(1) : '0.0';
-            return `<tr><td style="font-weight:600;">${p.marca}</td><td style="text-align:right;font-weight:700;">${fmt(p.receita)}</td><td style="text-align:right;">${kgEst > 0 ? fmtKg(kgEst) : '—'}</td><td style="text-align:right;">${pct}%</td><td style="text-align:right;">${prEst > 0 ? 'R$ '+prEst.toFixed(2).replace('.',',') : '—'}</td></tr>`;
+            return `<tr><td style="font-weight:600;">${p.marca}</td><td style="text-align:right;font-weight:700;">${fmt(p.receita)}</td><td style="text-align:right;">${kg > 0 ? fmtKg(kg) : '—'}</td><td style="text-align:right;">${pct}%</td><td style="text-align:right;">${preco > 0 ? 'R$ '+preco.toFixed(2).replace('.',',') : '—'}</td></tr>`;
           }).join('')}
-          <tr class="total-row"><td>TOTAL CARNE</td><td style="text-align:right;">${fmt(totalCarneR)}</td><td style="text-align:right;">${fmtKg(cData.kg_carne)}</td><td style="text-align:right;">100%</td><td style="text-align:right;">—</td></tr>
+          <tr class="total-row"><td>TOTAL CARNE</td><td style="text-align:right;">${fmt(totalCarneR)}</td><td style="text-align:right;">${fmtKg(usarKgReal ? totalKgReal : cData.kg_carne)}</td><td style="text-align:right;">100%</td><td style="text-align:right;">—</td></tr>
         </tbody>
       </table>
     </div>
     <div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:10px;">
-      <div class="cdd-card-title">Preço Médio R$/kg — Evolução Mensal</div>
-      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Preço médio ponderado da carne (receita ind. ÷ kg total no mês).</div>
-      <canvas id="card_preco_marca" height="90"></canvas>
+      <div class="cdd-card-title">Preço Médio R$/kg — Evolução Mensal por Marca</div>
+      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Preço de cada marca (receita real da marca ÷ kg real vendido da marca, mês a mês).</div>
+      <canvas id="card_preco_marca" height="100"></canvas>
     </div>
     <div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
       <div class="cdd-card-title">Receita por Marca de Carne — Evolução Mensal (R$)</div>
@@ -4131,6 +4157,7 @@ function renderClientCard(clientName) {
       <div class="cdd-card-title">Quantidade por Marca de Carne — Evolução Mensal (kg)</div>
       <canvas id="card_carne_kg" height="100"></canvas>
     </div>`;
+  };
 
   const mkDistTbl = () => {
     if (distBrands.length === 0) return '';
@@ -4302,14 +4329,6 @@ function renderClientCard(clientName) {
         <div class="cdd-card"><div class="cdd-card-title">Ticket Médio por Pedido (R$)</div><canvas id="card_ticket" height="130"></canvas></div>
       </div>
 
-      <!-- Preço Carne -->
-      ${hasPreco ? `
-      <div class="cdd-section">🥩 Preço da Carne</div>
-      <div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
-        <div class="cdd-card-title">Preço Médio da Carne ao Longo do Tempo (R$/kg)</div>
-        <canvas id="card_preco" height="90"></canvas>
-      </div>` : ''}
-
       <!-- Marcas -->
       <div class="cdd-section">🏷️ Marcas e Produtos — ${_periodoStr}</div>
       ${allBrands.length > 0 ? `<div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
@@ -4324,11 +4343,11 @@ function renderClientCard(clientName) {
     </div>`;
 
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR));
+    requestAnimationFrame(() => cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR, MESES, _useClientBrandRecF[clientName] || {}, _useClientBrandQtyF[clientName] || {}));
   });
 }
 
-function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR) {
+function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR, MESES, clientBrandRec, clientBrandQty) {
   const xTick = { color:'#000', font:{ size:9 } };
   const yTick = { color:'#000', font:{ size:9 }, callback: v => 'R$'+(v/1000).toFixed(0)+'k' };
   const gridC = { color:'rgba(0,30,60,.07)' };
@@ -4400,16 +4419,6 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
     });
   }
 
-  /* Chart 6 — Preço/kg */
-  if (hasPreco && document.getElementById('card_preco')) {
-    destroyChart('card_preco');
-    charts['card_preco'] = new Chart(document.getElementById('card_preco'), {
-      type:'line',
-      data:{ labels:MN, datasets:[{ label:'R$/kg', data:mPreco, borderColor:'#B33A3A', backgroundColor:'rgba(179,58,58,.06)', fill:true, tension:.3, pointBackgroundColor:'#B33A3A', pointRadius:5, borderWidth:2, spanGaps:true }] },
-      options:{ responsive:true, maintainAspectRatio:true, plugins:{legend:noLeg,datalabels:{display:true,color:'#000',font:{size:9,weight:'700'},anchor:'top',align:'top',offset:4,backgroundColor:'rgba(255,255,255,.85)',borderRadius:3,padding:{left:2,right:2,top:1,bottom:1},formatter:v=>v?'R$ '+v.toFixed(2).replace('.',',')+'/kg':''}}, scales:{x:{grid:gridC,ticks:xTick},y:{grid:gridC,ticks:{color:'#000',font:{size:9},callback:v=>'R$'+v.toFixed(0)},beginAtZero:false}} }
-    });
-  }
-
   /* Chart 7 — Marcas */
   if (allBrands.length > 0 && document.getElementById('card_marcas')) {
     destroyChart('card_marcas');
@@ -4440,14 +4449,21 @@ function cardRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, 
     return new Chart(cvs, { type:'line', data:{ labels:MN, datasets }, options:{ responsive:true, maintainAspectRatio:true, plugins:{ legend:{display:true,position:'top',labels:{color:'#000',font:{size:9},boxWidth:11,padding:10}}, datalabels:{display:false}, tooltip:{callbacks:{label:tooltipLabel}} }, scales:{ x:{grid:gridC,ticks:xTick}, y:{grid:gridC,ticks:{color:'#000',font:{size:9},callback:yCallback},beginAtZero:false} } } });
   }
 
-  /* Chart 8 — Preço por marca */
+  /* Chart 8 — Preço por marca (real: receita real da marca ÷ kg real da marca, por mês) */
   const precoCvs = document.getElementById('card_preco_marca');
-  if (precoCvs && mPreco.some(v => v !== null)) {
+  if (precoCvs && carneBrands && carneBrands.length > 0 && MESES) {
     destroyChart('card_preco_marca');
-    const validP = mPreco.filter(v => v !== null);
-    const minP = Math.max(0, Math.min(...validP) * 0.94);
-    const maxP = Math.max(...validP) * 1.10;
-    charts['card_preco_marca'] = new Chart(precoCvs, { type:'line', data:{ labels:MN, datasets:[{ label:'R$/kg', data:mPreco, borderColor:'#0F4245', backgroundColor:'rgba(15,66,69,.08)', fill:true, tension:.38, pointBackgroundColor:'#0F4245', pointRadius:mPreco.map(v=>v!==null?6:0), pointHoverRadius:8, borderWidth:2.5, spanGaps:false, datalabels:{display:true,color:'#000',font:{size:10,weight:'700'},anchor:'top',align:'top',offset:5,backgroundColor:'rgba(255,255,255,.90)',borderRadius:3,padding:{left:4,right:4,top:1,bottom:1},formatter:v=>v!==null?'R$'+v.toFixed(2).replace('.',','):''} }] }, options:{ responsive:true, maintainAspectRatio:true, plugins:{legend:{display:false},datalabels:{},tooltip:{callbacks:{label:ctx=>` Preço: R$ ${ctx.raw?.toFixed(2).replace('.',',')} /kg`}}}, scales:{x:{grid:gridC,ticks:xTick},y:{grid:gridC,ticks:{color:'#000',font:{size:9},callback:v=>'R$'+v.toFixed(0)},min:minP,max:maxP}} } });
+    const ds8 = carneBrands.map((b,i) => {
+      const data = MESES.map(m => {
+        const rec = (clientBrandRec[String(m)] || {})[b.marca] || 0;
+        const qty = (clientBrandQty[String(m)] || {})[b.marca] || 0;
+        return qty > 0 ? +(rec/qty).toFixed(2) : null;
+      });
+      return mkLineDataset2(b.marca, data, CARNE_PALETTE, i);
+    });
+    if (ds8.some(d => d.data.some(v => v !== null))) {
+      charts['card_preco_marca'] = mkLineChart2(precoCvs, ds8, v=>'R$'+v.toFixed(0), ctx=>` ${ctx.dataset.label}: R$ ${ctx.raw?.toFixed(2).replace('.',',')}/kg`);
+    }
   }
 
   /* Chart 9 — Receita por marca de carne */
@@ -5460,17 +5476,29 @@ function cddOpen(name) {
   const _useClientMon  = _cddLocalData ? _cddLocalData.CLIENT_MONTHLY : CLIENT_MONTHLY;
   const _useMKPIS      = _cddLocalData ? _cddLocalData.MONTHLY_KPIS   : MONTHLY_KPIS;
 
-  const c = _useClients.find(x => x.cliente === name) || CLIENTS.find(x => x.cliente === name);
+  const cLocal = _useClients.find(x => x.cliente === name);
+  const c = cLocal || CLIENTS.find(x => x.cliente === name);
   if (!c) return;
 
-  const monthly  = _useClientMon[name]  || [];
+  // BUGFIX: se o cliente não está no recorte local filtrado (usingFallback=true), os
+  // totais (c) vêm dos dados GLOBAIS — então o mensal/produtos/meses ativos também devem
+  // vir dos dados GLOBAIS. Antes, misturava mensal local (vazio) com totais globais e a
+  // tabela "Histórico Mensal" aparecia com "Sem compra" em todos os meses mesmo havendo
+  // compra (ex.: em Junho) para o cliente.
+  const usingFallback  = !cLocal;
+  const _useClientMonF  = usingFallback ? CLIENT_MONTHLY   : _useClientMon;
+  const _useMKPISF      = usingFallback ? MONTHLY_KPIS     : _useMKPIS;
+  const _useClientBrandRecF = usingFallback ? CLIENT_BRAND_REC : (_cddLocalData?.CLIENT_BRAND_REC || CLIENT_BRAND_REC);
+  const _useClientBrandQtyF = usingFallback ? CLIENT_BRAND_QTY : (_cddLocalData?.CLIENT_BRAND_QTY || CLIENT_BRAND_QTY);
+
+  const monthly  = _useClientMonF[name]  || [];
   const products = CLIENT_PRODUCTS[name] || [];
   const mMap = {};
   monthly.forEach(m => { mMap[m.mes] = m; });
 
-  const MESES = _useMKPIS.length ? _useMKPIS.map(d => d.mes)
+  const MESES = _useMKPISF.length ? _useMKPISF.map(d => d.mes)
               : monthly.map(m=>m.mes).sort((a,b)=>a-b);
-  const MN    = _useMKPIS.length ? _useMKPIS.map(d => d.nome)
+  const MN    = _useMKPISF.length ? _useMKPISF.map(d => d.nome)
               : MESES.map(m=>['','Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'][m]||String(m));
 
   const indPct  = c.receita > 0 ? c.rev_ind / c.receita : 0;
@@ -5607,32 +5635,46 @@ function cddOpen(name) {
   }).join('<span style="color:rgba(0,0,0,.2);margin:0 2px;align-self:center;">→</span>');
 
   // Table helpers
-  const mkCarneTbl = () => carneBrands.length === 0 ? '' : `
+  const mkCarneTbl = () => {
+    if (carneBrands.length === 0) return '';
+    // Kg REAL por marca (Peso Líquido Total do Item, somado direto por marca/mês),
+    // ao invés de ratear o kg total do cliente proporcionalmente à receita — o rateio
+    // proporcional faz o R$/kg dar sempre o mesmo valor para todas as marcas (bug).
+    const cbq = _useClientBrandQtyF[name] || {};
+    const brandKgReal = {};
+    carneBrands.forEach(p => {
+      let kgSum = 0;
+      MESES.forEach(m => { kgSum += (cbq[String(m)] || {})[p.marca] || 0; });
+      brandKgReal[p.marca] = kgSum;
+    });
+    const totalKgReal = carneBrands.reduce((s,p) => s + (brandKgReal[p.marca] || 0), 0);
+    const usarKgReal  = totalKgReal > 0;
+    return `
     <div style="font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(0,0,0,.5);margin:16px 0 7px;">Tabela 1 — Performance por Marca de Carne (Produto Pronto)</div>
     <div class="cdd-tbl-wrap">
       <table>
-        <thead><tr><th>Marca</th><th style="text-align:right;">Receita R$</th><th style="text-align:right;">Kg Estimado</th><th style="text-align:right;">% Carne</th><th style="text-align:right;">R$/kg Est.</th></tr></thead>
+        <thead><tr><th>Marca</th><th style="text-align:right;">Receita R$</th><th style="text-align:right;">Kg${usarKgReal ? '' : ' Estimado'}</th><th style="text-align:right;">% Carne</th><th style="text-align:right;">R$/kg${usarKgReal ? '' : ' Est.'}</th></tr></thead>
         <tbody>
           ${carneBrands.map(p => {
-            const kgEst = totalCarneR > 0 ? (p.receita / totalCarneR) * c.kg_carne : 0;
-            const prEst = kgEst > 0 ? p.receita / kgEst : 0;
+            const kg    = usarKgReal ? (brandKgReal[p.marca] || 0) : (totalCarneR > 0 ? (p.receita / totalCarneR) * c.kg_carne : 0);
+            const preco = kg > 0 ? p.receita / kg : 0;
             const pct   = totalCarneR > 0 ? (p.receita / totalCarneR * 100).toFixed(1) : '0.0';
             return `<tr>
               <td style="font-weight:600;">${p.marca}</td>
               <td style="text-align:right;font-weight:700;">${fmt(p.receita)}</td>
-              <td style="text-align:right;">${kgEst > 0 ? fmtKg(kgEst) : '—'}</td>
+              <td style="text-align:right;">${kg > 0 ? fmtKg(kg) : '—'}</td>
               <td style="text-align:right;">${pct}%</td>
-              <td style="text-align:right;">${prEst > 0 ? 'R$ '+prEst.toFixed(2).replace('.',',') : '—'}</td>
+              <td style="text-align:right;">${preco > 0 ? 'R$ '+preco.toFixed(2).replace('.',',') : '—'}</td>
             </tr>`;
           }).join('')}
-          <tr class="total-row"><td>TOTAL CARNE</td><td style="text-align:right;">${fmt(totalCarneR)}</td><td style="text-align:right;">${fmtKg(c.kg_carne)}</td><td style="text-align:right;">100%</td><td style="text-align:right;">—</td></tr>
+          <tr class="total-row"><td>TOTAL CARNE</td><td style="text-align:right;">${fmt(totalCarneR)}</td><td style="text-align:right;">${fmtKg(usarKgReal ? totalKgReal : c.kg_carne)}</td><td style="text-align:right;">100%</td><td style="text-align:right;">—</td></tr>
         </tbody>
       </table>
     </div>
     <div class="cdd-card cdd-card-full" style="margin-top:14px;margin-bottom:10px;">
-      <div class="cdd-card-title">Preço Médio R$/kg — Evolução Mensal</div>
-      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Preço médio ponderado da carne (receita ind. ÷ kg total no mês).</div>
-      <canvas id="cdd_preco_marca" height="90"></canvas>
+      <div class="cdd-card-title">Preço Médio R$/kg — Evolução Mensal por Marca</div>
+      <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Preço de cada marca (receita real da marca ÷ kg real vendido da marca, mês a mês).</div>
+      <canvas id="cdd_preco_marca" height="100"></canvas>
     </div>
     <div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
       <div class="cdd-card-title">Receita por Marca de Carne — Evolução Mensal (R$)</div>
@@ -5644,6 +5686,7 @@ function cddOpen(name) {
       <div style="font-size:9px;color:rgba(0,0,0,.38);margin-bottom:10px;">Kg estimado por marca a partir da proporção de mix acumulado.</div>
       <canvas id="cdd_carne_kg" height="100"></canvas>
     </div>`;
+  };
 
   const mkDistTbl = () => {
     if (distBrands.length === 0) return '';
@@ -5851,14 +5894,6 @@ function cddOpen(name) {
       </div>
     </div>
 
-    <!-- Section: Carne -->
-    ${hasPreco ? `
-    <div class="cdd-section">🥩 Preço da Carne</div>
-    <div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
-      <div class="cdd-card-title">Preço Médio da Carne ao Longo do Tempo (R$/kg) — estimado a partir da proporção de receita</div>
-      <canvas id="cdd_preco" height="90"></canvas>
-    </div>` : ''}
-
     <!-- Section: Marcas -->
     <div class="cdd-section">🏷️ Marcas e Produtos — Acumulado 2026</div>
     ${allBrands.length > 0 ? `<div class="cdd-card cdd-card-full" style="margin-bottom:10px;">
@@ -5876,11 +5911,11 @@ function cddOpen(name) {
 
   // Render charts after DOM paint
   requestAnimationFrame(() => {
-    requestAnimationFrame(() => cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR));
+    requestAnimationFrame(() => cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR, MESES, _useClientBrandRecF[name] || {}, _useClientBrandQtyF[name] || {}));
   });
 }
 
-function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR) {
+function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, mPreco, allBrands, hasBoth, hasPreco, indPct, carneBrands, totalCarneR, distBrands, totalDistR, MESES, clientBrandRec, clientBrandQty) {
   const xTick = { color:'#000', font:{ size:9 } };
   const yTick = { color:'#000', font:{ size:9 }, callback: v => 'R$'+(v/1000).toFixed(0)+'k' };
   const gridC = { color:'rgba(0,30,60,.07)' };
@@ -6001,24 +6036,6 @@ function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, m
     });
   }
 
-  /* Chart 6 — Preço/kg */
-  if (hasPreco && document.getElementById('cdd_preco')) {
-    destroyChart('cdd_preco');
-    charts['cdd_preco'] = new Chart(document.getElementById('cdd_preco'), {
-      type:'line',
-      data: { labels:MN, datasets:[{
-        label:'R$/kg', data:mPreco,
-        borderColor:'#B33A3A', backgroundColor:'rgba(179,58,58,.06)',
-        fill:true, tension:.3, pointBackgroundColor:'#B33A3A', pointRadius:5, borderWidth:2, spanGaps:true
-      }]},
-      options: {
-        responsive:true, maintainAspectRatio:true,
-        plugins: { legend:noLeg, datalabels:{ display:true, color:'#000', font:{size:9,weight:'700'}, anchor:'top', align:'top', offset:4, backgroundColor:'rgba(255,255,255,.85)', borderRadius:3, padding:{left:2,right:2,top:1,bottom:1}, formatter:v=>v?'R$ '+v.toFixed(2).replace('.',',')+'/kg':'' }, tooltip:{ callbacks:{ label:ctx=>ctx.raw?' R$ '+ctx.raw.toFixed(2)+'/kg':'' } } },
-        scales: { x:{ grid:gridC, ticks:xTick }, y:{ grid:gridC, ticks:{ color:'#000', font:{size:9}, callback:v=>'R$'+v.toFixed(0) }, beginAtZero:false } }
-      }
-    });
-  }
-
   /* Chart 7 — Marcas horizontal bar */
   if (allBrands.length > 0 && document.getElementById('cdd_marcas')) {
     destroyChart('cdd_marcas');
@@ -6094,51 +6111,21 @@ function cddRenderCharts(MN, mTotais, mCumul, mNfs, mKg, mInd, mDist, mTicket, m
     });
   }
 
-  /* Chart 8 — Preço Médio R$/kg — linha única */
+  /* Chart 8 — Preço por marca (real: receita real da marca ÷ kg real da marca, por mês) */
   const precoCvs = document.getElementById('cdd_preco_marca');
-  if (precoCvs && mPreco.some(v => v !== null)) {
+  if (precoCvs && carneBrands && carneBrands.length > 0 && MESES) {
     destroyChart('cdd_preco_marca');
-    const validP = mPreco.filter(v => v !== null);
-    const minP = Math.max(0, Math.min(...validP) * 0.94);
-    const maxP = Math.max(...validP) * 1.10;
-    charts['cdd_preco_marca'] = new Chart(precoCvs, {
-      type: 'line',
-      data: { labels: MN, datasets: [{
-        label: 'R$/kg',
-        data: mPreco,
-        borderColor: '#0F4245',
-        backgroundColor: 'rgba(15,66,69,.08)',
-        fill: true,
-        tension: .38,
-        pointBackgroundColor: '#0F4245',
-        pointRadius: mPreco.map(v => v !== null ? 6 : 0),
-        pointHoverRadius: 8,
-        borderWidth: 2.5,
-        spanGaps: false,
-        datalabels: {
-          display: true,
-          color: '#000',
-          font: { size: 10, weight: '700' },
-          anchor: 'top', align: 'top', offset: 5,
-          backgroundColor: 'rgba(255,255,255,.90)',
-          borderRadius: 3,
-          padding: { left:4, right:4, top:1, bottom:1 },
-          formatter: v => v !== null ? 'R$'+v.toFixed(2).replace('.',',') : ''
-        }
-      }]},
-      options: {
-        responsive: true, maintainAspectRatio: true,
-        plugins: {
-          legend: { display: false },
-          datalabels: {},
-          tooltip: { callbacks: { label: ctx => ` Preço: R$ ${ctx.raw?.toFixed(2).replace('.',',')} /kg` } }
-        },
-        scales: {
-          x: { grid: gridC, ticks: xTick },
-          y: { grid: gridC, ticks: { color:'#000', font:{size:9}, callback: v => 'R$'+v.toFixed(0) }, min: minP, max: maxP }
-        }
-      }
+    const ds8 = carneBrands.map((b, i) => {
+      const data = MESES.map(m => {
+        const rec = (clientBrandRec[String(m)] || {})[b.marca] || 0;
+        const qty = (clientBrandQty[String(m)] || {})[b.marca] || 0;
+        return qty > 0 ? +(rec/qty).toFixed(2) : null;
+      });
+      return mkLineDataset(b.marca, data, CARNE_PALETTE, i);
     });
+    if (ds8.some(d => d.data.some(v => v !== null))) {
+      charts['cdd_preco_marca'] = mkLineChart(precoCvs, ds8, v=>'R$'+v.toFixed(0), ctx=>` ${ctx.dataset.label}: R$ ${ctx.raw?.toFixed(2).replace('.',',')}/kg`);
+    }
   }
 
   /* Chart 9 — Receita por Marca de Carne por Mês */
