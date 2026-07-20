@@ -5846,7 +5846,7 @@ function cddOpen(name) {
         </tr></thead>
         <tbody>
           ${MN.map((mn,i) => {
-            const m = i+1; const r = mMap[m];
+            const m = MESES[i]; const r = mMap[m];
             if (!r) return `<tr style="background:rgba(0,0,0,.02);"><td style="color:rgba(0,0,0,.35);">${mn}</td><td colspan="7" style="text-align:center;color:rgba(0,0,0,.25);font-size:10px;padding:9px 0;">Sem compra neste mês</td></tr>`;
             const indE = (r.receita * indPct);
             const disE = (r.receita * distPct);
